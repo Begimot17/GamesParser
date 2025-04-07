@@ -136,6 +136,8 @@ class DTFParser:
             if store_links:
                 cleaned_url = self._clean_store_url(store_links[0])
                 if cleaned_url:
+                    if '/accounts/' in cleaned_url:
+                        continue
                     stores[store_name] = cleaned_url
         return stores
 

@@ -341,7 +341,8 @@ class VGTimesParser:
             # Combine and parse
             datetime_str = f"{day} {month} {year} {time_part}"
             dt = datetime.strptime(datetime_str, "%d %B %Y %H:%M")
-            return dt.isoformat()
+            # Ensure proper ISO format with space between date and time
+            return dt.strftime("%Y-%m-%d %H:%M:%S%z")
 
         except Exception as e:
             logger.error(f"Error parsing date '{date_str}': {e}")

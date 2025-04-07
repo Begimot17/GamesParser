@@ -1,56 +1,57 @@
-from datetime import datetime
+import json
+import logging
+import os
+from typing import Set
 
-from sqlalchemy import Column, DateTime, String
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
-
-from src.config.config import Config
-
-Base = declarative_base()
-
-
-class ProcessedPost(Base):
-    __tablename__ = "processed_posts"
-
-    id = Column(String, primary_key=True)
-    title = Column(String, nullable=False)
-    link = Column(String, nullable=False)
-    processed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-    def __repr__(self) -> str:
-        return f"<ProcessedPost(id='{self.id}', title='{self.title}')>"
+logger = logging.getLogger(__name__)
 
 
 class Database:
-    def __init__(self):
-        # Используем aiosqlite вместо обычного sqlite
-        self.engine = create_async_engine(
-            f"sqlite+aiosqlite:///{Config.DB_PATH}", echo=False
-        )
-        self.async_session = sessionmaker(
-            self.engine, class_=AsyncSession, expire_on_commit=False
-        )
+    def __init__(self, db_path: str = "news_bot.db"):
+        self.db_path = db_path
+        self.processed_posts: Set[str] = set()
+        self._load_data()
 
-    async def _create_tables(self) -> None:
-        """Create database tables if they don't exist"""
+    def _load_data(self):
+        """Загрузка данных из файла."""
         try:
-            async with self.engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
-        except SQLAlchemyError as e:
-            raise RuntimeError(f"Failed to create database tables: {e}")
+            if os.path.exists(self.db_path):
+                with open(self.db_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.processed_posts = set(data.get("processed_posts", []))
+            logger.info(f"Loaded {len(self.processed_posts)} processed posts")
+        except Exception as e:
+            logger.error(f"Error loading data: {str(e)}")
+            self.processed_posts = set()
 
-    async def initialize(self) -> None:
-        """Initialize the database"""
-        await self._create_tables()
+    def _save_data(self):
+        """Сохранение данных в файл."""
+        try:
+            data = {
+                "processed_posts": list(self.processed_posts),
+            }
+            with open(self.db_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.info(f"Saved {len(self.processed_posts)} processed posts")
+        except Exception as e:
+            logger.error(f"Error saving data: {str(e)}")
 
-    def get_session(self) -> AsyncSession:
-        """Get a new database session"""
-        return self.async_session()
+    def mark_as_processed(self, post_id: str):
+        """Пометка поста как обработанного."""
+        try:
+            self.processed_posts.add(post_id)
+            self._save_data()
+            logger.info(f"Marked post {post_id} as processed")
+        except Exception as e:
+            logger.error(f"Error marking post {post_id} as processed: {str(e)}")
 
-    async def close(self) -> None:
-        """Close the database connection"""
-        await self.engine.dispose()
+    def is_processed(self, post_id: str) -> bool:
+        """Проверка, был ли пост обработан."""
+        return post_id in self.processed_posts
+
+    def close(self) -> None:
+        """Закрытие базы данных"""
+        self._save_data()
 
 
 # Global database instance

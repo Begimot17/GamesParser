@@ -85,8 +85,6 @@ class NewsMonitor:
                     )
                     
                     if success:
-                        # Сохраняем пост в хранилище
-                        self.storage.save_post(post)
                         # Помечаем пост как обработанный
                         self.storage.mark_as_processed(post.id)
                         logger.info(f"Successfully processed post {post.id}")

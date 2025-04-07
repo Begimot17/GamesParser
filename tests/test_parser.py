@@ -115,5 +115,37 @@ def test_rate_limit(parser):
         
     asyncio.run(test())
 
+def test_parse_and_print_messages(parser):
+    """Test parsing and printing messages without sending to Telegram."""
+    import asyncio
+    
+    async def test():
+        async with parser as p:
+            # Получаем посты
+            posts = await p.fetch_posts()
+            
+            # Выводим информацию о каждом посте
+            for post in posts:
+                print("\n" + "="*50)
+                print(f"ID: {post.id}")
+                print(f"Title: {post.title}")
+                print(f"Link: {post.link}")
+                print(f"Content: {post.content[:200]}...")  # Первые 200 символов
+                print(f"Date: {post.date}")
+                print(f"Rating: {post.metadata.rating}")
+                print("Store Links:")
+                for store, link in post.metadata.store_links.items():
+                    print(f"  {store}: {link}")
+                print("Images:")
+                for img in post.metadata.images:
+                    print(f"  {img}")
+                print("="*50)
+            
+            return len(posts)
+    
+    # Запускаем тест
+    num_posts = asyncio.run(test())
+    assert num_posts > 0, "No posts were parsed"
+
 if __name__ == "__main__":
     pytest.main([__file__]) 

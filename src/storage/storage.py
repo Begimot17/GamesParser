@@ -10,6 +10,14 @@ from models.models import Post, ProcessedPost
 logger = logging.getLogger(__name__)
 
 
+class DateTimeEncoder(json.JSONEncoder):
+    """Кастомный JSON-энкодер для обработки объектов datetime."""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
+
+
 class PostStorage:
     def __init__(self, db_path: str = "news_bot.db"):
         self.db_path = db_path
@@ -23,6 +31,12 @@ class PostStorage:
             if os.path.exists(self.db_path):
                 with open(self.db_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                    # Преобразуем строки дат обратно в объекты datetime
+                    for post_id, post_data in data.get("posts", {}).items():
+                        if "date" in post_data and post_data["date"]:
+                            post_data["date"] = datetime.fromisoformat(post_data["date"])
+                        if "metadata" in post_data and "date" in post_data["metadata"] and post_data["metadata"]["date"]:
+                            post_data["metadata"]["date"] = datetime.fromisoformat(post_data["metadata"]["date"])
                     self.posts = {
                         post_id: Post(**post_data)
                         for post_id, post_data in data.get("posts", {}).items()
@@ -45,7 +59,7 @@ class PostStorage:
                 "processed_posts": list(self.processed_posts),
             }
             with open(self.db_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2, cls=DateTimeEncoder)
             logger.info(f"Saved {len(self.posts)} posts and {len(self.processed_posts)} processed posts")
         except Exception as e:
             logger.error(f"Error saving data: {str(e)}")
@@ -55,7 +69,8 @@ class PostStorage:
         try:
             self.posts[post.id] = post
             self._save_data()
-            logger.info(f"Saved post {post.id}")
+            logger.info(f"Saved post {post.id} with title: {post.title}")
+            logger.info(f"Total posts in storage: {len(self.posts)}")
         except Exception as e:
             logger.error(f"Error saving post {post.id}: {str(e)}")
 
@@ -84,7 +99,7 @@ class PostStorage:
             old_post_ids = [
                 post_id
                 for post_id, post in self.posts.items()
-                if post.created_at < cutoff_date
+                if post.created_at is not None and post.created_at < cutoff_date
             ]
             for post_id in old_post_ids:
                 del self.posts[post_id]

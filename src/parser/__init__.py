@@ -1,9 +1,9 @@
 """
-Parser Package
-
-A package for parsing and processing news content.
+Модуль для парсинга сайтов с игровыми новостями.
 """
 
-from .parser import Parser
+from .dtf_parser import DTFParser
+from .vgtimes_parser import VGTimesParser
+from .parser_manager import ParserManager
 
-__all__ = ["Parser"] 
+__all__ = ['DTFParser', 'VGTimesParser', 'ParserManager'] 

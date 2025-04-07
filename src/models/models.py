@@ -14,63 +14,61 @@ class StoreLinks(BaseModel):
 
 
 class PostMetadata(BaseModel):
-    author: Optional[str] = None
-    date: Optional[str] = None
-    tags: List[str] = []
-
-    @field_validator("author")
-    @classmethod
-    def clean_author(cls, v: Optional[str]) -> Optional[str]:
-        return v.strip() if v else None
-
-    @field_validator("date")
-    @classmethod
-    def clean_date(cls, v: Optional[str]) -> Optional[str]:
-        return v.strip() if v else None
-
-    @field_validator("tags")
-    @classmethod
-    def clean_tags(cls, v: List[str]) -> List[str]:
-        """Очистка тегов от пустых значений."""
-        return [tag for tag in v if tag.strip()]
-
-
-class Post(BaseModel):
-    id: str
-    title: str
-    link: str
-    text: str
+    rating: str = "0"
+    store_links: Dict[str, str] = {}
     images: List[str] = []
-    rating: str
-    stores: Dict[str, str] = {}
-    created_at: datetime = datetime.now()
-    metadata: PostMetadata
-
-    @field_validator("title")
-    @classmethod
-    def clean_title(cls, v: str) -> str:
-        """Очистка заголовка от лишних пробелов."""
-        return v.strip() if v else ""
-
-    @field_validator("text")
-    @classmethod
-    def clean_text(cls, v: str) -> str:
-        return v.strip()
+    date: Optional[datetime] = None
 
     @field_validator("rating")
     @classmethod
     def clean_rating(cls, v: str) -> str:
-        return v.strip() if v else "N/A"
+        return v.strip() if v else "0"
 
-    @field_validator("stores")
+    @field_validator("store_links")
     @classmethod
-    def clean_stores(cls, v: Dict[str, str]) -> Dict[str, str]:
+    def clean_store_links(cls, v: Dict[str, str]) -> Dict[str, str]:
         return {k: v for k, v in v.items() if k and v}
 
     @field_validator("images")
     @classmethod
     def clean_images(cls, v: List[str]) -> List[str]:
         return list(set(v))  # Удаляем дубликаты
+
+
+class Post(BaseModel):
+    id: str
+    title: str
+    link: str
+    content: str
+    date: Optional[datetime] = None
+    metadata: PostMetadata
+    created_at: Optional[datetime] = None
+
+    @field_validator("id")
+    @classmethod
+    def clean_id(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("ID cannot be empty")
+        return v.strip()
+
+    @field_validator("title")
+    @classmethod
+    def clean_title(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Title cannot be empty")
+        return v.strip()
+
+    @field_validator("link")
+    @classmethod
+    def clean_link(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Link cannot be empty")
+        return v.strip()
+
+    @field_validator("content")
+    @classmethod
+    def clean_content(cls, v: str) -> str:
+        return v.strip() if v else ""
 
 
 class ProcessedPost(BaseModel):

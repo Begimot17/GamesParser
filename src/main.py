@@ -9,7 +9,7 @@ from typing import Optional, Set
 from bot.bot import TelegramNewsBot
 from config.config import Config
 from models.models import Post
-from parser.parser import Parser
+from parser.parser_manager import ParserManager
 from storage.storage import PostStorage
 
 # Настройка логирования
@@ -38,7 +38,7 @@ class NewsMonitor:
             token=Config.TELEGRAM_BOT_TOKEN,
             channel_id=Config.TELEGRAM_CHANNEL_ID
         )
-        self.parser = Parser()
+        self.parser_manager = ParserManager()
         self.storage = PostStorage()
         
         logger.info("NewsMonitor initialized successfully")
@@ -55,7 +55,7 @@ class NewsMonitor:
         
         try:
             # Получаем новые посты
-            posts = await self.parser.fetch_posts()
+            posts = await self.parser_manager.fetch_all_posts()
             if not posts:
                 logger.info("No new posts found")
                 return
@@ -81,10 +81,12 @@ class NewsMonitor:
                     # Отправляем сообщение
                     success = await self.bot.send_message(
                         text=formatted_message,
-                        images=post.images
+                        images=post.metadata.images
                     )
                     
                     if success:
+                        # Сохраняем пост в хранилище
+                        self.storage.save_post(post)
                         # Помечаем пост как обработанный
                         self.storage.mark_as_processed(post.id)
                         logger.info(f"Successfully processed post {post.id}")

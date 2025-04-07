@@ -15,12 +15,13 @@ from src.models.models import Post, PostMetadata
 logger = logging.getLogger(__name__)
 
 
-class Parser:
+class DTFParser:
     # Конфигурация парсера
     REQUEST_TIMEOUT = Config.REQUEST_TIMEOUT
     MAX_TEXT_LENGTH = Config.MAX_TEXT_LENGTH
     VALID_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
     RATE_LIMIT_DELAY = 2  # Задержка между запросами в секундах
+    TARGET_URL = Config.TARGET_URL
 
     # CSS селекторы
     SELECTORS = {
@@ -142,10 +143,10 @@ class Parser:
         """Основной метод для получения и обработки постов"""
         try:
             await self._rate_limit()
-            response = await self._fetch_page(Config.TARGET_URL)
+            response = await self._fetch_page(self.TARGET_URL)
             return self._process_page(response)
         except Exception as e:
-            logger.error("Неожиданная ошибка при парсинге: %s", str(e), exc_info=True)
+            logger.error("Неожиданная ошибка при парсинге DTF: %s", str(e), exc_info=True)
             return []
 
     async def _fetch_page(self, url: str) -> str:
@@ -176,12 +177,12 @@ class Parser:
                     if post:
                         posts.append(post)
                 except Exception as e:
-                    logger.error("Ошибка при парсинге статьи: %s", str(e), exc_info=True)
+                    logger.error("Ошибка при парсинге статьи DTF: %s", str(e), exc_info=True)
                     continue
 
             return posts
         except Exception as e:
-            logger.error("Ошибка при обработке страницы: %s", str(e), exc_info=True)
+            logger.error("Ошибка при обработке страницы DTF: %s", str(e), exc_info=True)
             return []
 
     def _normalize_url(self, url: str, base_url: str = None) -> str:
@@ -195,7 +196,7 @@ class Parser:
                 url = f"https:{url}"
             # Если URL начинается с /, добавляем базовый URL
             elif url.startswith("/"):
-                base_url = base_url or Config.TARGET_URL
+                base_url = base_url or self.TARGET_URL
                 url = urljoin(base_url, url)
             # Если URL не содержит схему, добавляем https://
             elif not urlparse(url).scheme:
@@ -207,118 +208,81 @@ class Parser:
             return ""
 
     def _parse_article(self, article: Tag) -> Optional[Post]:
-        """Парсинг статьи с главной страницы"""
+        """Парсинг статьи с главной страницы DTF"""
         try:
             # Получаем ID поста
             post_id = article.get("data-story-id")
             if not post_id:
-                logger.warning("No post ID found in article")
+                logger.warning("No post ID found in DTF article")
                 return None
 
             # Получаем заголовок
             title_element = article.select_one(self.SELECTORS["title"])
             if not title_element:
-                logger.warning("No title found for post %s", post_id)
+                logger.warning("No title found for DTF post %s", post_id)
                 return None
             title = self._clean_text(title_element.text)
             if not title:
-                logger.warning("Empty title for post %s", post_id)
+                logger.warning("Empty title for DTF post %s", post_id)
                 return None
 
             # Получаем ссылку
             link = self._normalize_url(title_element.get("href", ""))
             if not link:
-                logger.warning("No link found for post %s", post_id)
+                logger.warning("No link found for DTF post %s", post_id)
                 return None
 
             # Получаем рейтинг
             rating_element = article.select_one(self.SELECTORS["rating"])
             rating = self._clean_text(rating_element.text) if rating_element else "0"
 
-            # Получаем автора
-            author_element = article.select_one(self.SELECTORS["author"])
-            author = self._clean_text(author_element.text) if author_element else None
-
-            # Получаем дату и форматируем её
+            # Получаем дату
+            date = None
             date_element = article.select_one(self.SELECTORS["date"])
             if date_element:
                 date_str = date_element.get("datetime")
                 if date_str:
-                    # Преобразуем ISO формат в более читаемый
-                    date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-                    date = date.strftime("%d.%m.%Y %H:%M")
-                else:
-                    date = None
-            else:
-                date = None
+                    try:
+                        date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                    except ValueError:
+                        logger.warning("Invalid date format for DTF post %s: %s", post_id, date_str)
 
-            # Получаем теги
-            tags = [
-                self._clean_text(tag.text)
-                for tag in article.select(self.SELECTORS["tags"])
-                if tag.text.strip()
-            ]
+            # Получаем контент
+            content_element = article.select_one(self.SELECTORS["content"])
+            content = self._clean_text(content_element.text) if content_element else ""
 
             # Получаем изображения
             images = []
             for selector in self.SELECTORS["images"]:
                 for img in article.select(selector):
-                    # Проверяем все возможные атрибуты с URL изображения
-                    for attr in ["src", "data-src", "data-original", "data-image"]:
-                        src = img.get(attr, "")
-                        if src:
-                            # Нормализуем URL
-                            src = self._normalize_url(src)
-                            
-                            # Проверяем расширение файла и исключаем аватары
-                            if any(src.lower().endswith(ext) for ext in self.VALID_IMAGE_EXTENSIONS) and "/avatars/" not in src:
-                                # Убираем параметры из URL
-                                src = src.split('?')[0]
-                                
-                                # Проверяем, что URL не пустой и не дублируется
-                                if src and src not in images:
-                                    images.append(src)
-                                    break  # Переходим к следующему изображению
+                    src = img.get("src") or img.get("data-src")
+                    if src:
+                        src = self._normalize_url(src)
+                        if src and any(src.endswith(ext) for ext in self.VALID_IMAGE_EXTENSIONS):
+                            if '/avatars/' in src:
+                                continue
+                            images.append(src)
 
-            # Получаем текст
-            content_element = article.select_one(self.SELECTORS["content"])
-            text = content_element.text if content_element else ""
+            # Извлекаем ссылки на магазины
+            store_links = self._extract_store_links(content)
 
-            # Получаем ссылки на магазины из HTML
-            stores = {}
-            for link_element in article.select(self.SELECTORS["store_links"]):
-                href = link_element.get("href", "")
-                if href:
-                    cleaned_url = self._clean_store_url(href)
-                    if cleaned_url:
-                        for store_name, pattern in self.store_patterns.items():
-                            if pattern.search(cleaned_url):
-                                stores[store_name] = cleaned_url
-                                break
+            # Создаем метаданные
+            metadata = PostMetadata(
+                rating=rating,
+                store_links=store_links,
+                images=images,
+                date=date
+            )
 
-            # Ищем ссылки на магазины в тексте
-            text_stores = self._extract_store_links(text)
-            stores.update(text_stores)
-
-            # Очищаем текст после извлечения ссылок
-            text = self._clean_text(text)
-
-            # Создаем объект поста
             return Post(
                 id=post_id,
                 title=title,
                 link=link,
-                rating=rating,
-                text=text,
-                images=images,
-                stores=stores,
-                metadata=PostMetadata(
-                    author=author,
-                    date=date,
-                    tags=tags
-                )
+                content=content,
+                date=date,
+                metadata=metadata
             )
 
         except Exception as e:
-            logger.error("Error parsing article: %s", str(e), exc_info=True)
+            logger.error("Ошибка при парсинге статьи DTF: %s", str(e), exc_info=True)
             return None 

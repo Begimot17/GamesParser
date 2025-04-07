@@ -456,7 +456,8 @@ class TelegramNewsBot:
             # Форматируем метаданные
             metadata = []
             if post.metadata and post.metadata.date:
-                metadata.append(f"📅 {post.metadata.date}")
+                formatted_date = post.metadata.date.strftime("%d.%m.%Y %H:%M")
+                metadata.append(f"📅 {formatted_date}")
 
             # Форматируем рейтинг
             rating_text = f"⭐ {post.metadata.rating}" if post.metadata and post.metadata.rating else ""

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any, Tuple
 from urllib.parse import urljoin, urlparse
 import json
@@ -20,7 +20,23 @@ class ArticleMetadata:
     rating: Optional[int] = None
     store_links: Dict[str, str] = None
     images: List[str] = None
-    date: Optional[str] = None
+    date: Optional[datetime] = None
+
+    def dict(self) -> dict:
+        """Convert the Article to a dictionary for serialization."""
+        return {
+            "id": self.id,
+            "title": self.title,
+            "link": self.link,
+            "content": self.content,
+            "image_url": self.image_url,
+            "metadata": {
+                "rating": self.metadata.rating if self.metadata else None,
+                "store_links": self.metadata.store_links if self.metadata else None,
+                "images": self.metadata.images if self.metadata else None,
+                "date": self.metadata.date if self.metadata else None
+            } if self.metadata else None
+        }
 
 @dataclass
 class Article:
@@ -159,6 +175,9 @@ class VGTimesParser:
                             content, date = await self._fetch_full_content(article.id, article.link)
                             article.content = content
                             if article.metadata:
+                                # Ensure date is timezone-aware
+                                if date and date.tzinfo is None:
+                                    date = date.replace(tzinfo=timezone(timedelta(hours=3)))
                                 article.metadata.date = date
                     
                     return articles
@@ -221,9 +240,14 @@ class VGTimesParser:
             content_elem = article_html.select_one(self.SELECTORS['content'])
             content = self._clean_text(content_elem.get_text()) if content_elem else None
 
-            # Find date
+            # Find date and ensure it's timezone-aware
             date_elem = article_html.select_one(self.SELECTORS['date'])
-            date = self._parse_date(date_elem.get_text()) if date_elem else None
+            date = None
+            if date_elem:
+                date = self._parse_date(date_elem.get_text())
+                if date and date.tzinfo is None:
+                    # If no timezone info, assume MSK (UTC+3)
+                    date = date.replace(tzinfo=timezone(timedelta(hours=3)))
 
             # Collect all images
             images = []
@@ -251,7 +275,7 @@ class VGTimesParser:
             logger.error(f"Error parsing article: {e}")
             return None
 
-    async def _fetch_full_content(self, post_id: str, post_link: str) -> Tuple[str, str]:
+    async def _fetch_full_content(self, post_id: str, post_link: str) -> Tuple[str, datetime]:
         """Fetch the full content of a post."""
         try:
             # Remove any fragment identifiers from the URL
@@ -269,7 +293,7 @@ class VGTimesParser:
             async with self.session.get(clean_url, headers=headers) as response:
                 if response.status != 200:
                     logger.warning(f"Failed to fetch content for post {post_id}, status: {response.status}")
-                    return '', ''
+                    return '', None
 
                 html = await response.text()
                 logger.info(f"Got HTML response for post {post_id}, length: {len(html)}")
@@ -288,17 +312,39 @@ class VGTimesParser:
                     logger.warning(f"Could not find content for post {post_id}")
 
                 # Extract date from JSON-LD metadata
-                date = ''
+                date = None
                 for script in soup.find_all('script', type='application/ld+json'):
                     try:
                         data = json.loads(script.string)
                         if data.get('@type') == 'NewsArticle' and data.get('datePublished'):
-                            date = data['datePublished'].replace('MSK', '')
-                            logger.info(f"Found date in JSON-LD metadata: {date}")
+                            date_str = data['datePublished'].replace('MSK', '')
+                            try:
+                                # Fix the date format by adding missing separators
+                                if 'T' not in date_str:
+                                    # Format: YYYY-MM-DDHH:MM:SS+00:00
+                                    date_str = f"{date_str[:10]}T{date_str[10:]}"
+                                # Parse the date and ensure it has timezone info
+                                dt = datetime.fromisoformat(date_str)
+                                if dt.tzinfo is None:
+                                    # If no timezone info, assume MSK (UTC+3)
+                                    dt = dt.replace(tzinfo=timezone(timedelta(hours=3)))
+                                date = dt
+                                logger.info(f"Successfully parsed date from JSON-LD metadata: {date}")
+                            except ValueError as e:
+                                logger.warning(f"Invalid date format in JSON-LD metadata: {date_str}, error: {e}")
                             break
                     except (json.JSONDecodeError, AttributeError) as e:
                         logger.warning(f"Error parsing JSON-LD metadata: {e}")
                         continue
+
+                if not date:
+                    # Try to find date in HTML if not found in JSON-LD
+                    date_elem = soup.select_one('div.article_date, div.date, time.date')
+                    if date_elem:
+                        date_text = date_elem.get_text(strip=True)
+                        date = self._parse_date(date_text)
+                        if date:
+                            logger.info(f"Found date in HTML for post {post_id}: {date}")
 
                 if not date:
                     logger.warning(f"Could not find date for post {post_id}")
@@ -308,13 +354,14 @@ class VGTimesParser:
 
         except Exception as e:
             logger.error(f"Error fetching content for post {post_id}: {e}")
-            return '', ''
+            return '', None
 
-    def _parse_date(self, date_str: str) -> str:
+    def _parse_date(self, date_str: str) -> datetime:
         """Parse date from string like '5 апреля 2025, 23:22'."""
         try:
             # Remove clock icon if present
             date_str = re.sub(r'<i.*?</i>', '', date_str).strip()
+            logger.info(f"Parsing date from HTML: {date_str}")
             
             # Map Russian month names to English
             ru_to_en = {
@@ -327,7 +374,8 @@ class VGTimesParser:
             # Split into date and time parts
             date_parts = date_str.split(',')
             if len(date_parts) != 2:
-                return ''
+                logger.warning(f"Invalid date format in HTML: {date_str}")
+                return None
 
             date_part = date_parts[0].strip()
             time_part = date_parts[1].strip()
@@ -336,17 +384,21 @@ class VGTimesParser:
             day, month, year = date_part.split()
             month = ru_to_en.get(month.lower(), '')
             if not month:
-                return ''
+                logger.warning(f"Unknown month in date: {date_str}")
+                return None
 
             # Combine and parse
             datetime_str = f"{day} {month} {year} {time_part}"
+            # Create naive datetime first
             dt = datetime.strptime(datetime_str, "%d %B %Y %H:%M")
-            # Ensure proper ISO format with space between date and time
-            return dt.strftime("%Y-%m-%d %H:%M:%S%z")
+            # Add Moscow timezone (MSK, UTC+3)
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=3)))
+            logger.info(f"Successfully parsed date from HTML: {dt}")
+            return dt
 
         except Exception as e:
             logger.error(f"Error parsing date '{date_str}': {e}")
-            return ''
+            return None
 
     def _is_store_url(self, url: str) -> bool:
         """Check if URL is from a game store."""

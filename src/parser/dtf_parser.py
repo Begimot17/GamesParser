@@ -243,9 +243,13 @@ class DTFParser:
                 date_str = date_element.get("datetime")
                 if date_str:
                     try:
+                        logger.info(f"Found date in HTML for DTF post {post_id}: {date_str}")
                         date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                        logger.info(f"Successfully parsed date for DTF post {post_id}: {date}")
                     except ValueError:
                         logger.warning("Invalid date format for DTF post %s: %s", post_id, date_str)
+            else:
+                logger.warning(f"No date element found for DTF post {post_id}")
 
             # Получаем контент
             content_element = article.select_one(self.SELECTORS["content"])

@@ -43,12 +43,6 @@ class NewsMonitor:
         
         logger.info("NewsMonitor initialized successfully")
 
-    async def cleanup_old_posts(self):
-        """Удаление старых постов из памяти."""
-        logger.info("Cleaning up old posts from memory...")
-        self.storage.cleanup_old_posts()
-        logger.info(f"Cleanup completed. Current processed posts count: {len(self.storage.processed_posts)}")
-
     async def process_new_posts(self):
         """Обработка новых постов."""
         logger.info("Starting to process new posts...")
@@ -64,6 +58,9 @@ class NewsMonitor:
             
             # Фильтруем уже обработанные посты
             new_posts = [post for post in posts if not self.storage.is_processed(post.id)]
+            
+            # Сортируем посты по дате (старые сначала)
+            new_posts.sort(key=lambda x: x.metadata.date if x.metadata and x.metadata.date else datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo))
             
             # Обрабатываем новые посты
             for post in new_posts:
@@ -107,7 +104,6 @@ class NewsMonitor:
         try:
             while True:
                 await self.process_new_posts()
-                await self.cleanup_old_posts()
                 
                 logger.info(f"Waiting {Config.CHECK_INTERVAL} seconds before next check...")
                 await asyncio.sleep(Config.CHECK_INTERVAL)

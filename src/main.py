@@ -6,11 +6,16 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional, Set
 
-from bot.bot import TelegramNewsBot
-from config.config import Config
-from models.models import Post
-from parser.parser_manager import ParserManager
-from storage.storage import PostStorage
+# Add the project root to the Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from src.bot.bot import TelegramNewsBot
+from src.config.config import Config
+from src.models.models import Post
+from src.parser.parser_manager import ParserManager
+from src.storage.storage import PostStorage
 
 # Настройка логирования
 logging.basicConfig(

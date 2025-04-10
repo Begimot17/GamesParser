@@ -1,9 +1,8 @@
 import asyncio
 import logging
 import re
-import time
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -70,7 +69,9 @@ class DTFParser:
         """Ограничение частоты запросов"""
         current_time = asyncio.get_event_loop().time()
         if current_time - self.last_request_time < self.RATE_LIMIT_DELAY:
-            await asyncio.sleep(self.RATE_LIMIT_DELAY - (current_time - self.last_request_time))
+            await asyncio.sleep(
+                self.RATE_LIMIT_DELAY - (current_time - self.last_request_time)
+            )
         self.last_request_time = current_time
 
     def _clean_text(self, text: str) -> str:
@@ -89,34 +90,34 @@ class DTFParser:
         """Очистка и проверка URL магазина"""
         if not url:
             return ""
-            
+
         # Нормализуем URL
         url = self._normalize_url(url)
-        
+
         # Удаляем параметры отслеживания и реферальные ссылки
-        url = url.split('?')[0]
-        url = url.split('#')[0]
-        
+        url = url.split("?")[0]
+        url = url.split("#")[0]
+
         # Проверяем, что это ссылка на конкретный товар, а не на главную страницу
         if "store.steampowered.com" in url:
             # Для Steam проверяем наличие /app/ и ID приложения
-            if not re.search(r'/app/\d+/', url):
+            if not re.search(r"/app/\d+/", url):
                 return ""
         elif "epicgames.com" in url:
             # Для Epic Games проверяем наличие /p/ и ID продукта
-            if not re.search(r'/p/[^/]+$', url):
+            if not re.search(r"/p/[^/]+$", url):
                 return ""
         elif "itch.io" in url:
             # Для itch.io проверяем, что это не главная страница и есть название игры
-            if url.rstrip('/').count('/') < 3 or url.endswith('/itch.io'):
+            if url.rstrip("/").count("/") < 3 or url.endswith("/itch.io"):
                 return ""
         elif "gog.com" in url:
             # Для GOG проверяем наличие /game/ и название игры
-            if not re.search(r'/game/[^/]+$', url):
+            if not re.search(r"/game/[^/]+$", url):
                 return ""
         else:
             return ""
-                
+
         return url
 
     def _extract_store_links(self, text: str) -> Dict[str, str]:
@@ -125,7 +126,9 @@ class DTFParser:
         # Ищем ссылки в тексте
         for store_name, pattern in self.store_patterns.items():
             # Ищем ссылки в формате [store_name](url)
-            store_links = re.findall(rf'\[{store_name}\]\((https?://[^)]+)\)', text, re.IGNORECASE)
+            store_links = re.findall(
+                rf"\[{store_name}\]\((https?://[^)]+)\)", text, re.IGNORECASE
+            )
             if store_links:
                 cleaned_url = self._clean_store_url(store_links[0])
                 if cleaned_url:
@@ -136,7 +139,7 @@ class DTFParser:
             if store_links:
                 cleaned_url = self._clean_store_url(store_links[0])
                 if cleaned_url:
-                    if '/accounts/' in cleaned_url:
+                    if "/accounts/" in cleaned_url:
                         continue
                     stores[store_name] = cleaned_url
         return stores
@@ -148,7 +151,9 @@ class DTFParser:
             response = await self._fetch_page(self.TARGET_URL)
             return self._process_page(response)
         except Exception as e:
-            logger.error("Неожиданная ошибка при парсинге DTF: %s", str(e), exc_info=True)
+            logger.error(
+                "Неожиданная ошибка при парсинге DTF: %s", str(e), exc_info=True
+            )
             return []
 
     async def _fetch_page(self, url: str) -> str:
@@ -158,7 +163,9 @@ class DTFParser:
             try:
                 if not self.session:
                     self.session = aiohttp.ClientSession(headers=self.headers)
-                async with self.session.get(url, timeout=self.REQUEST_TIMEOUT) as response:
+                async with self.session.get(
+                    url, timeout=self.REQUEST_TIMEOUT
+                ) as response:
                     response.raise_for_status()
                     return await response.text()
             except Exception as e:
@@ -179,7 +186,9 @@ class DTFParser:
                     if post:
                         posts.append(post)
                 except Exception as e:
-                    logger.error("Ошибка при парсинге статьи DTF: %s", str(e), exc_info=True)
+                    logger.error(
+                        "Ошибка при парсинге статьи DTF: %s", str(e), exc_info=True
+                    )
                     continue
 
             return posts
@@ -245,11 +254,17 @@ class DTFParser:
                 date_str = date_element.get("datetime")
                 if date_str:
                     try:
-                        logger.info(f"Found date in HTML for DTF post {post_id}: {date_str}")
-                        date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-                        logger.info(f"Successfully parsed date for DTF post {post_id}: {date}")
+                        logger.info(
+                            f"Found date in HTML for DTF post {post_id}: {date_str}"
+                        )
+                        date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                        logger.info(
+                            f"Successfully parsed date for DTF post {post_id}: {date}"
+                        )
                     except ValueError:
-                        logger.warning("Invalid date format for DTF post %s: %s", post_id, date_str)
+                        logger.warning(
+                            "Invalid date format for DTF post %s: %s", post_id, date_str
+                        )
             else:
                 logger.warning(f"No date element found for DTF post {post_id}")
 
@@ -264,8 +279,10 @@ class DTFParser:
                     src = img.get("src") or img.get("data-src")
                     if src:
                         src = self._normalize_url(src)
-                        if src and any(src.endswith(ext) for ext in self.VALID_IMAGE_EXTENSIONS):
-                            if '/avatars/' in src:
+                        if src and any(
+                            src.endswith(ext) for ext in self.VALID_IMAGE_EXTENSIONS
+                        ):
+                            if "/avatars/" in src:
                                 continue
                             images.append(src)
 
@@ -274,10 +291,7 @@ class DTFParser:
 
             # Создаем метаданные
             metadata = PostMetadata(
-                rating=rating,
-                store_links=store_links,
-                images=images,
-                date=date
+                rating=rating, store_links=store_links, images=images, date=date
             )
 
             return Post(
@@ -286,9 +300,9 @@ class DTFParser:
                 link=link,
                 content=content,
                 date=date,
-                metadata=metadata
+                metadata=metadata,
             )
 
         except Exception as e:
             logger.error("Ошибка при парсинге статьи DTF: %s", str(e), exc_info=True)
-            return None 
+            return None

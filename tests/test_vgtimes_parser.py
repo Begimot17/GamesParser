@@ -1,13 +1,15 @@
-import pytest
 import asyncio
-from datetime import datetime
+
+import pytest
 from bs4 import BeautifulSoup
+
 from src.parser.vgtimes_parser import VGTimesParser
-from src.models.models import Post, PostMetadata
+
 
 @pytest.fixture
 def parser():
     return VGTimesParser()
+
 
 @pytest.fixture
 def sample_article_html():
@@ -25,6 +27,7 @@ def sample_article_html():
         <a class="l_ks" target="_blank" href="https://store.steampowered.com/app/123">Steam Link</a>
     </div>
     """
+
 
 @pytest.fixture
 def sample_page_html():
@@ -45,6 +48,7 @@ def sample_page_html():
     </div>
     """
 
+
 def test_clean_text():
     """Test text cleaning functionality."""
     parser = VGTimesParser()
@@ -56,24 +60,29 @@ def test_clean_text():
         ("", ""),
         (None, ""),
     ]
-    
+
     for text, expected in test_cases:
         result = parser._clean_text(text)
         assert result == expected, f"Text cleaning failed for '{text}'"
+
 
 def test_clean_store_url():
     """Test store URL cleaning functionality."""
     parser = VGTimesParser()
     test_cases = [
-        ("https://store.steampowered.com/app/123?utm_source=test", "https://store.steampowered.com/app/123"),
+        (
+            "https://store.steampowered.com/app/123?utm_source=test",
+            "https://store.steampowered.com/app/123",
+        ),
         ("http://epicgames.com#test", "http://epicgames.com"),
         ("gog.com", "https://gog.com"),
         ("", "https://"),
     ]
-    
+
     for url, expected in test_cases:
         result = parser._clean_store_url(url)
         assert result == expected, f"Store URL cleaning failed for '{url}'"
+
 
 def test_extract_store_links():
     """Test store links extraction functionality."""
@@ -81,18 +90,19 @@ def test_extract_store_links():
     test_cases = [
         (
             "Check out [Steam](https://store.steampowered.com/app/123)",
-            {"Steam": "https://store.steampowered.com/app/123"}
+            {"Steam": "https://store.steampowered.com/app/123"},
         ),
         (
             "Check out [Epic Games](https://epicgames.com) and [GOG](https://gog.com)",
-            {"Epic Games": "https://epicgames.com", "GOG": "https://gog.com"}
+            {"Epic Games": "https://epicgames.com", "GOG": "https://gog.com"},
         ),
         ("No store links here", {}),
     ]
-    
+
     for text, expected in test_cases:
         result = parser._extract_store_links(text)
         assert result == expected, f"Store links extraction failed for '{text}'"
+
 
 def test_parse_date():
     """Test date parsing functionality."""
@@ -102,52 +112,61 @@ def test_parse_date():
         ("15 декабря 2023, 12:00", "2023-12-15T12:00:00"),
         ("invalid date", ""),
     ]
-    
+
     for date_str, expected in test_cases:
         result = parser._parse_date(date_str)
         assert result == expected, f"Date parsing failed for '{date_str}'"
+
 
 def test_extract_post_id():
     """Test post ID extraction functionality."""
     parser = VGTimesParser()
     test_cases = [
-        ("https://vgtimes.ru/free/123799-v-steam-stal-vremenno-besplatnym-avtobattler-mechabellum.html", "123799"),
+        (
+            "https://vgtimes.ru/free/123799-v-steam-stal-vremenno-besplatnym-avtobattler-mechabellum.html",
+            "123799",
+        ),
         ("https://vgtimes.ru/free/456789-test-post.html", "456789"),
         ("invalid-url", ""),
     ]
-    
+
     for url, expected in test_cases:
         result = parser._extract_post_id(url)
         assert result == expected, f"Post ID extraction failed for '{url}'"
 
+
 def test_parse_article(parser, sample_article_html):
     """Test parsing a single article."""
-    soup = BeautifulSoup(sample_article_html, 'html.parser')
-    article = soup.find('div', class_='news_list_footer')
-    
+    soup = BeautifulSoup(sample_article_html, "html.parser")
+    article = soup.find("div", class_="news_list_footer")
+
     post = parser._parse_article(article)
     assert post is not None, "Failed to parse article"
     assert post.id == "123799", "Wrong post ID"
     assert "Бесплатная игра" in post.title, "Wrong title"
     assert post.metadata.rating == "42", "Wrong rating"
     assert len(post.metadata.images) == 2, "Wrong number of images"
-    assert all(img.endswith('.jpg') for img in post.metadata.images), "Invalid image URLs"
+    assert all(img.endswith(".jpg") for img in post.metadata.images), (
+        "Invalid image URLs"
+    )
+
 
 def test_process_page(parser, sample_page_html):
     """Test processing a full page of articles."""
     posts = parser._process_page(sample_page_html)
-    
+
     assert len(posts) == 2, "Wrong number of posts parsed"
-    
+
     # Check first post
     assert posts[0].id == "123799", "Wrong ID for first post"
     assert posts[0].title == "Game 1", "Wrong title for first post"
     assert posts[0].metadata.rating == "42", "Wrong rating for first post"
-    
+
     # Check second post
     assert posts[1].id == "123800", "Wrong ID for second post"
     assert posts[1].title == "Game 2", "Wrong title for second post"
     assert posts[1].metadata.rating == "24", "Wrong rating for second post"
+
 
 @pytest.mark.asyncio
 async def test_rate_limit():
@@ -155,19 +174,22 @@ async def test_rate_limit():
     parser = VGTimesParser()
     # Reset the last request time to ensure consistent testing
     parser.last_request_time = 0
-    
+
     # First call should not delay
     start_time = asyncio.get_event_loop().time()
     await parser._rate_limit()
     first_call_time = asyncio.get_event_loop().time()
-    
+
     # Second call should delay
     await parser._rate_limit()
     second_call_time = asyncio.get_event_loop().time()
-    
+
     # Check that the second call had the required delay
     time_diff = second_call_time - first_call_time
-    assert time_diff >= parser.RATE_LIMIT_DELAY, f"Rate limit delay not enforced. Expected >= {parser.RATE_LIMIT_DELAY}, got {time_diff}"
+    assert time_diff >= parser.RATE_LIMIT_DELAY, (
+        f"Rate limit delay not enforced. Expected >= {parser.RATE_LIMIT_DELAY}, got {time_diff}"
+    )
+
 
 @pytest.mark.asyncio
 async def test_fetch_page():
@@ -178,16 +200,17 @@ async def test_fetch_page():
     content = await parser._fetch_page(url)
     assert content is not None
     assert len(content) > 0
-    
+
     # Test with an invalid URL that should trigger all retries
     url = "https://invalid-url-that-does-not-exist-123456789.com"
     with pytest.raises(Exception):
         await parser._fetch_page(url)
-    
+
     # Test with a URL that returns non-200 status
     url = "https://httpstat.us/404"
     with pytest.raises(Exception):
         await parser._fetch_page(url)
+
 
 def test_is_store_url():
     """Test store URL detection functionality."""
@@ -199,10 +222,11 @@ def test_is_store_url():
         ("https://example.com", False),
         ("", False),
     ]
-    
+
     for url, expected in test_cases:
         result = parser._is_store_url(url)
         assert result == expected, f"Store URL detection failed for '{url}'"
 
+
 if __name__ == "__main__":
-    pytest.main([__file__]) 
+    pytest.main([__file__])

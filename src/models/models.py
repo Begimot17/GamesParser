@@ -1,8 +1,7 @@
 from datetime import datetime
 from typing import Dict, List, Optional
-from urllib.parse import urlparse
 
-from pydantic import BaseModel, field_validator, HttpUrl
+from pydantic import BaseModel, field_validator
 
 
 class StoreLinks(BaseModel):
@@ -89,4 +88,4 @@ class ProcessedPost(BaseModel):
     def clean_title(cls, v: str) -> str:
         if not v.strip():
             raise ValueError("Title cannot be empty")
-        return v.strip() 
+        return v.strip()

@@ -1,16 +1,17 @@
 import asyncio
 import logging
-from datetime import datetime
 from unittest import TestCase, main
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from bs4 import BeautifulSoup
-from src.parser.vgtimes_parser import VGTimesParser
+
 from src.models.models import Post
+from src.parser.vgtimes_parser import VGTimesParser
 
 # Настройка логирования для тестов
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
 
 class TestVGTimesParser(TestCase):
     def setUp(self):
@@ -37,9 +38,9 @@ class TestVGTimesParser(TestCase):
         """Тест парсинга отдельной статьи"""
         soup = BeautifulSoup(self.test_html, "html.parser")
         article = soup.select_one("div.news_list_footer")
-        
+
         post = self.parser._parse_article(article)
-        
+
         self.assertIsNotNone(post)
         self.assertEqual(post.id, "123456")
         self.assertEqual(post.title, "Test Article Title")
@@ -51,20 +52,20 @@ class TestVGTimesParser(TestCase):
     def test_process_page(self):
         """Тест обработки целой страницы"""
         posts = self.parser._process_page(self.test_html)
-        
+
         self.assertEqual(len(posts), 2)
         self.assertIsInstance(posts[0], Post)
         self.assertIsInstance(posts[1], Post)
-        
+
         # Проверяем первую статью
         self.assertEqual(posts[0].id, "123456")
         self.assertEqual(posts[0].title, "Test Article Title")
-        
+
         # Проверяем вторую статью
         self.assertEqual(posts[1].id, "123457")
         self.assertEqual(posts[1].title, "Another Article")
 
-    @patch('aiohttp.ClientSession.get')
+    @patch("aiohttp.ClientSession.get")
     async def test_fetch_posts(self, mock_get):
         """Тест получения постов с моком HTTP запроса"""
         # Настраиваем мок для HTTP запроса
@@ -72,10 +73,10 @@ class TestVGTimesParser(TestCase):
         mock_response.status = 200
         mock_response.text = MagicMock(return_value=self.test_html)
         mock_get.return_value.__aenter__.return_value = mock_response
-        
+
         async with self.parser as parser:
             posts = await parser.fetch_posts()
-            
+
             self.assertEqual(len(posts), 2)
             self.assertIsInstance(posts[0], Post)
             self.assertIsInstance(posts[1], Post)
@@ -84,7 +85,7 @@ class TestVGTimesParser(TestCase):
         """Тест очистки текста"""
         dirty_text = "  Test   Text  \n  With  \t  Spaces  "
         cleaned_text = self.parser._clean_text(dirty_text)
-        
+
         self.assertEqual(cleaned_text, "Test Text With Spaces")
 
     def test_extract_post_id(self):
@@ -93,9 +94,9 @@ class TestVGTimesParser(TestCase):
             ("/free/123456-test-article.html", "123456"),
             ("https://vgtimes.ru/free/789012-another-test.html", "789012"),
             ("invalid-url", ""),
-            ("", "")
+            ("", ""),
         ]
-        
+
         for url, expected_id in test_cases:
             with self.subTest(url=url):
                 post_id = self.parser._extract_post_id(url)
@@ -107,9 +108,9 @@ class TestVGTimesParser(TestCase):
             ("5 апреля 2025, 23:22", "2025-04-05T23:22:00"),
             ("15 марта 2025, 10:15", "2025-03-15T10:15:00"),
             ("invalid date", ""),
-            ("", "")
+            ("", ""),
         ]
-        
+
         for date_str, expected_iso in test_cases:
             with self.subTest(date_str=date_str):
                 parsed_date = self.parser._parse_date(date_str)
@@ -132,5 +133,6 @@ class TestVGTimesParser(TestCase):
         posts = asyncio.run(parser.fetch_posts(test_url))
         assert isinstance(posts, list)
 
-if __name__ == '__main__':
-    main() 
+
+if __name__ == "__main__":
+    main()

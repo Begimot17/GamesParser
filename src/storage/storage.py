@@ -61,4 +61,4 @@ class PostStorage:
             self._save_data()
             logger.info(f"Cleaned up {old_count} old posts from memory")
         except Exception as e:
-            logger.error(f"Error cleaning up old posts: {str(e)}") 
+            logger.error(f"Error cleaning up old posts: {str(e)}")

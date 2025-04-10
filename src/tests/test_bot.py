@@ -1,5 +1,6 @@
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.bot.bot import TelegramNewsBot
 
@@ -11,7 +12,7 @@ def bot():
         channel_id="test_channel",
         message_delay=0.1,
         retry_delay=0.1,
-        max_retries=1
+        max_retries=1,
     )
 
 
@@ -42,7 +43,7 @@ def test_split_text(bot):
 async def test_send_with_retry_success(bot):
     mock_method = AsyncMock(return_value="success")
     result = await bot._send_with_retry(mock_method, "arg1", kwarg1="value1")
-    
+
     assert result == "success"
     mock_method.assert_called_once_with("arg1", kwarg1="value1")
 
@@ -50,14 +51,11 @@ async def test_send_with_retry_success(bot):
 @pytest.mark.asyncio
 async def test_send_with_retry_retry_after(bot):
     mock_method = AsyncMock()
-    mock_method.side_effect = [
-        Exception("RetryAfter"),
-        "success"
-    ]
-    
+    mock_method.side_effect = [Exception("RetryAfter"), "success"]
+
     with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await bot._send_with_retry(mock_method)
-        
+
         assert result == "success"
         assert mock_method.call_count == 2
         mock_sleep.assert_called_once()
@@ -67,41 +65,38 @@ async def test_send_with_retry_retry_after(bot):
 async def test_send_with_retry_max_retries(bot):
     mock_method = AsyncMock()
     mock_method.side_effect = Exception("Error")
-    
+
     with pytest.raises(Exception):
         await bot._send_with_retry(mock_method)
-    
+
     assert mock_method.call_count == bot.max_retries
 
 
 @pytest.mark.asyncio
 async def test_send_message_text_only(bot):
-    with patch.object(bot.bot, 'send_message', new_callable=AsyncMock) as mock_send:
+    with patch.object(bot.bot, "send_message", new_callable=AsyncMock) as mock_send:
         await bot.send_message("Test message")
         mock_send.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_send_message_with_images(bot):
-    with patch.object(bot.bot, 'send_media_group', new_callable=AsyncMock) as mock_send:
-        await bot.send_message(
-            "Test message",
-            images=["image1.jpg", "image2.jpg"]
-        )
+    with patch.object(bot.bot, "send_media_group", new_callable=AsyncMock) as mock_send:
+        await bot.send_message("Test message", images=["image1.jpg", "image2.jpg"])
         mock_send.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_send_message_long_text(bot):
     long_text = "a" * (bot.max_message_length + 100)
-    with patch.object(bot.bot, 'send_message', new_callable=AsyncMock) as mock_send:
+    with patch.object(bot.bot, "send_message", new_callable=AsyncMock) as mock_send:
         await bot.send_message(long_text)
         assert mock_send.call_count > 1
 
 
 @pytest.mark.asyncio
 async def test_send_message_error_handling(bot):
-    with patch.object(bot.bot, 'send_message', new_callable=AsyncMock) as mock_send:
+    with patch.object(bot.bot, "send_message", new_callable=AsyncMock) as mock_send:
         mock_send.side_effect = Exception("Error")
         result = await bot.send_message("Test message")
-        assert result is False 
+        assert result is False

@@ -10,7 +10,7 @@ def parser():
         base_url="https://example.com",
         request_delay=0.1,
         max_retries=1,
-        retry_delay=0.1
+        retry_delay=0.1,
     )
 
 
@@ -34,8 +34,8 @@ def sample_html():
 
 @pytest.mark.asyncio
 async def test_parse_article(parser, sample_html):
-    soup = BeautifulSoup(sample_html, 'html.parser')
-    article = soup.find('article')
+    soup = BeautifulSoup(sample_html, "html.parser")
+    article = soup.find("article")
     post = await parser._parse_article(article)
 
     assert post is not None
@@ -57,8 +57,8 @@ async def test_parse_article_missing_data(parser):
         <h2 class="post-card__title"></h2>
     </article>
     """
-    soup = BeautifulSoup(html, 'html.parser')
-    article = soup.find('article')
+    soup = BeautifulSoup(html, "html.parser")
+    article = soup.find("article")
     post = await parser._parse_article(article)
 
     assert post is None
@@ -85,13 +85,15 @@ async def test_process_page_invalid_html(parser):
 
 def test_normalize_url(parser):
     # Absolute URL
-    assert parser._normalize_url("https://example.com/test") == "https://example.com/test"
-    
+    assert (
+        parser._normalize_url("https://example.com/test") == "https://example.com/test"
+    )
+
     # Relative URL
     assert parser._normalize_url("/test") == "https://example.com/test"
-    
+
     # Empty URL
     assert parser._normalize_url("") == ""
-    
+
     # Invalid URL
-    assert parser._normalize_url("invalid") == "https://example.com/invalid" 
+    assert parser._normalize_url("invalid") == "https://example.com/invalid"

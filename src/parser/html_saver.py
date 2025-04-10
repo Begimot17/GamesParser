@@ -27,4 +27,4 @@ class HTMLSaver:
 
             logger.info("Saved HTML for post %s to %s", post_id, filename)
         except Exception as e:
-            logger.error("Error saving HTML for post %s: %s", post_id, str(e)) 
+            logger.error("Error saving HTML for post %s: %s", post_id, str(e))

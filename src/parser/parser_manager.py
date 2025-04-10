@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from typing import List
 
@@ -24,4 +23,4 @@ class ParserManager:
             except Exception as e:
                 logger.error("Ошибка при работе с парсером: %s", str(e), exc_info=True)
                 continue
-        return all_posts 
+        return all_posts

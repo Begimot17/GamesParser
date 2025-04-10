@@ -1,4 +1,4 @@
-from setuptools import setup, find_namespace_packages
+from setuptools import find_namespace_packages, setup
 
 setup(
     name="games_parser",
@@ -15,6 +15,6 @@ setup(
         "aiosqlite>=0.19.0",
         "aiofiles>=23.2.1",
         "pytest>=7.4.0",
-        "ruff>=0.1.9"
+        "ruff>=0.1.9",
     ],
-) 
+)

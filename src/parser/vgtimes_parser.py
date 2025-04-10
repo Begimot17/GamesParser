@@ -249,7 +249,7 @@ class VGTimesParser:
             # Find rating
             rating_elem = article_html.select_one(self.SELECTORS["rating"])
             try:
-                rating = int(rating_elem.get_text(strip=True)) if rating_elem else None
+                rating = int(rating_elem.get_text(strip=True).replace("-", "")) if rating_elem else None
             except (ValueError, TypeError):
                 rating = None
 

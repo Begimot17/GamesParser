@@ -14,13 +14,13 @@ from src.models.models import Post, PostMetadata
 logger = logging.getLogger(__name__)
 
 
-class DTFParser:
+class PikabuParser:
     # Конфигурация парсера
     REQUEST_TIMEOUT = Config.REQUEST_TIMEOUT
     MAX_TEXT_LENGTH = Config.MAX_TEXT_LENGTH
     VALID_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
     RATE_LIMIT_DELAY = 2  # Задержка между запросами в секундах
-    TARGET_URL = Config.TARGET_URL
+    TARGET_URL = "https://pikabu.ru/community/steam"
 
     # CSS селекторы
     SELECTORS = {

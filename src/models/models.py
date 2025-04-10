@@ -4,14 +4,6 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel, field_validator
 
 
-class StoreLinks(BaseModel):
-    steam: Optional[str] = None
-    epic: Optional[str] = None
-    gog: Optional[str] = None
-    humble_bundle: Optional[str] = None
-    itch_io: Optional[str] = None
-
-
 class PostMetadata(BaseModel):
     rating: str = "0"
     store_links: Dict[str, str] = {}

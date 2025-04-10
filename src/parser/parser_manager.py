@@ -2,15 +2,15 @@ import logging
 from typing import List
 
 from src.models.models import Post
-from src.parser.dtf_parser import DTFParser
 from src.parser.vgtimes_parser import VGTimesParser
+from src.parser.pikabu_parser import PikabuParser
 
 logger = logging.getLogger(__name__)
 
 
 class ParserManager:
     def __init__(self):
-        self.parsers = [DTFParser(), VGTimesParser()]
+        self.parsers = [VGTimesParser(), PikabuParser()]
 
     async def fetch_all_posts(self) -> List[Post]:
         """Получение постов со всех источников"""

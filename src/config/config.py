@@ -17,7 +17,6 @@ class Config:
     )
 
     # Parser settings
-    TARGET_URL: str = os.getenv("TARGET_URL", "https://pikabu.ru/community/steam")
     CHECK_INTERVAL: int = int(os.getenv("CHECK_INTERVAL", "300"))
     MAX_POSTS_PER_CHECK: int = int(os.getenv("MAX_POSTS_PER_CHECK", "5"))
     REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "30"))
@@ -31,9 +30,6 @@ class Config:
     DB_PATH: str = os.getenv("TEST_DB_PATH" if DEBUG else "DB_PATH", "news_bot.db")
     SAVE_HTML: bool = os.getenv("SAVE_HTML", "false").lower() == "true"
     HTML_DIR: str = os.getenv("HTML_DIR", "html_articles")
-
-    # AI settings
-    USE_AI: bool = False  # Отключаем AI обработку по умолчанию
 
     @classmethod
     def validate(cls) -> bool:

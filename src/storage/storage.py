@@ -52,13 +52,3 @@ class PostStorage:
     def close(self) -> None:
         """Закрытие хранилища"""
         self._save_data()
-
-    def cleanup_old_posts(self) -> None:
-        """Очистка старых постов из памяти."""
-        try:
-            old_count = len(self.processed_posts)
-            self.processed_posts.clear()
-            self._save_data()
-            logger.info(f"Cleaned up {old_count} old posts from memory")
-        except Exception as e:
-            logger.error(f"Error cleaning up old posts: {str(e)}")

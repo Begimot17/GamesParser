@@ -500,7 +500,7 @@ class TelegramNewsBot:
                         text = re.sub(pattern, "", text)
 
             stores_text = (
-                " | ".join(store_links) if store_links else "Нет ссылок на магазины"
+                " | ".join(store_links) if store_links else None
             )
 
             # Форматируем метаданные
@@ -513,7 +513,7 @@ class TelegramNewsBot:
             rating_text = (
                 f"⭐ {post.metadata.rating}"
                 if post.metadata and post.metadata.rating
-                else ""
+                else None
             )
 
             # Обрезаем только поле text до 200 символов
@@ -522,14 +522,14 @@ class TelegramNewsBot:
             # Собираем все части сообщения
             message_parts = [
                 f"🎮 {title_link}",
-                f"📊 {rating_text}",
-                f"🛒 {stores_text}",
+                f"📊 {rating_text}" if rating_text else None,
+                f"🛒 {stores_text}" if stores_text else None,
                 *metadata,
                 "",
                 text,
             ]
 
-            return "\n".join(message_parts)
+            return "\n".join(filter(None, message_parts))
 
         except Exception as e:
             logger.error(f"Error formatting message: {str(e)}")

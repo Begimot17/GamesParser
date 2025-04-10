@@ -57,4 +57,4 @@ class Database:
 
 
 # Global database instance
-db = Database(db_path=Config.TEST_DB_PATH)
+db = Database(db_path=Config.DB_PATH)

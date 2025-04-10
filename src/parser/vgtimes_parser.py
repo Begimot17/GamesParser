@@ -10,6 +10,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from src.config.config import Config
+from src.storage.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,7 @@ class VGTimesParser:
         }
         self.last_request_time = 0
         self.session = None
+        self.database = Database()
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(headers=self.headers)
@@ -186,6 +188,11 @@ class VGTimesParser:
                         # Fetch full content for each article
                         for article in articles:
                             if article:
+                                # Skip if article is already in database
+                                if self.database.is_processed(article.id):
+                                    logger.info(f"Article {article.id} already processed, skipping")
+                                    continue
+                                    
                                 content, date = await self._fetch_full_content(
                                     article.id, article.link
                                 )

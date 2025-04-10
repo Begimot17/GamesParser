@@ -177,7 +177,6 @@ class TelegramNewsBot:
     async def _send_with_retry(self, method, *args, **kwargs):
         """Отправка сообщения с повторными попытками."""
         last_error = None
-        base_delay = self.retry_delay
 
         for attempt in range(self.max_retries):
             try:

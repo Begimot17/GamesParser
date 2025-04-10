@@ -3,10 +3,10 @@
 """
 
 from .parser_manager import ParserManager
+from .pikabu_parser import PikabuParser
 from .utils.description_helper import generate_description
 from .utils.logger import setup_logger
 from .vgtimes_parser import VGTimesParser
-from .pikabu_parser import PikabuParser
 
 __all__ = [
     "PikabuParser",

@@ -2,8 +2,8 @@ import logging
 from typing import List
 
 from src.models.models import Post
-from src.parser.vgtimes_parser import VGTimesParser
 from src.parser.pikabu_parser import PikabuParser
+from src.parser.vgtimes_parser import VGTimesParser
 
 logger = logging.getLogger(__name__)
 

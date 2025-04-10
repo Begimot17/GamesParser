@@ -118,5 +118,19 @@ class TestVGTimesParser(TestCase):
                 else:
                     self.assertEqual(parsed_date, "")
 
+    def test_fetch_posts_multiple_urls(self):
+        """Test fetching posts from multiple URLs."""
+        parser = VGTimesParser()
+        assert len(parser.TARGET_URLS) == 2
+        assert "https://vgtimes.ru/free/" in parser.TARGET_URLS
+        assert "https://vgtimes.ru/gaming-news/" in parser.TARGET_URLS
+
+    def test_fetch_posts_single_url(self):
+        """Test fetching posts from a single URL."""
+        parser = VGTimesParser()
+        test_url = "https://vgtimes.ru/free/"
+        posts = asyncio.run(parser.fetch_posts(test_url))
+        assert isinstance(posts, list)
+
 if __name__ == '__main__':
     main() 

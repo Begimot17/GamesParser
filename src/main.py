@@ -44,7 +44,7 @@ class NewsMonitor:
             channel_id=Config.TELEGRAM_CHANNEL_ID
         )
         self.parser_manager = ParserManager()
-        self.storage = PostStorage()
+        self.storage = PostStorage(db_path=Config.DB_PATH)
         
         logger.info("NewsMonitor initialized successfully")
 

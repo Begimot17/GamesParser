@@ -69,7 +69,10 @@ class VGTimesParser:
     MAX_TEXT_LENGTH = Config.MAX_TEXT_LENGTH
     VALID_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
     RATE_LIMIT_DELAY = 2  # Задержка между запросами в секундах
-    TARGET_URL = "https://vgtimes.ru/free/"
+    TARGET_URLS = [
+        "https://vgtimes.ru/free/",
+        "https://vgtimes.ru/gaming-news/"
+    ]
 
     # CSS селекторы
     SELECTORS = {
@@ -150,40 +153,46 @@ class VGTimesParser:
                 store_links['GOG'] = href
         return store_links
 
-    async def fetch_posts(self, url: str = "https://vgtimes.ru/free/") -> List[Article]:
+    async def fetch_posts(self, url: str = None) -> List[Article]:
         """Fetch and parse posts from VGTimes"""
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Cache-Control': 'max-age=0'
-            }
-            async with aiohttp.ClientSession(headers=headers) as session:
-                self.session = session
-                async with session.get(url) as response:
-                    logger.info(f"Fetching page from {url}")
-                    html = await response.text()
-                    logger.info(f"Got response, length: {len(html)}")
-                    articles = self._process_page(html)
-                    
-                    # Fetch full content for each article
-                    for article in articles:
-                        if article:
-                            content, date = await self._fetch_full_content(article.id, article.link)
-                            article.content = content
-                            if article.metadata:
-                                # Ensure date is timezone-aware
-                                if date and date.tzinfo is None:
-                                    date = date.replace(tzinfo=timezone(timedelta(hours=3)))
-                                article.metadata.date = date
-                    
-                    return articles
-        except Exception as e:
-            logger.error(f"Error fetching posts: {e}")
-            return []
+        all_articles = []
+        urls = [url] if url else self.TARGET_URLS
+        
+        for target_url in urls:
+            try:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Cache-Control': 'max-age=0'
+                }
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    self.session = session
+                    async with session.get(target_url) as response:
+                        logger.info(f"Fetching page from {target_url}")
+                        html = await response.text()
+                        logger.info(f"Got response, length: {len(html)}")
+                        articles = self._process_page(html)
+                        
+                        # Fetch full content for each article
+                        for article in articles:
+                            if article:
+                                content, date = await self._fetch_full_content(article.id, article.link)
+                                article.content = content
+                                if article.metadata:
+                                    # Ensure date is timezone-aware
+                                    if date and date.tzinfo is None:
+                                        date = date.replace(tzinfo=timezone(timedelta(hours=3)))
+                                    article.metadata.date = date
+                        
+                        all_articles.extend(articles)
+            except Exception as e:
+                logger.error(f"Error fetching posts from {target_url}: {e}")
+                continue
+        
+        return all_articles
 
     def _process_page(self, html: str) -> List[Article]:
         """Process HTML page and extract articles"""

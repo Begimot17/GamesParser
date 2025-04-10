@@ -6,9 +6,12 @@ load_dotenv()
 
 
 class Config:
+    # Debug mode
+    DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
+    
     # Telegram settings
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_CHANNEL_ID: str = os.getenv("TELEGRAM_CHANNEL_ID", "")
+    TELEGRAM_CHANNEL_ID: str = os.getenv("TEST_CHANNEL_ID" if DEBUG else "TELEGRAM_CHANNEL_ID", "")
     
     # Parser settings
     TARGET_URL: str = os.getenv("TARGET_URL", "https://pikabu.ru/community/steam")
@@ -19,7 +22,7 @@ class Config:
     USER_AGENT: str = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     
     # Storage settings
-    DB_PATH: str = os.getenv("DB_PATH", "news_bot.db")
+    DB_PATH: str = os.getenv("TEST_DB_PATH" if DEBUG else "DB_PATH", "news_bot.db")
     SAVE_HTML: bool = os.getenv("SAVE_HTML", "false").lower() == "true"
     HTML_DIR: str = os.getenv("HTML_DIR", "html_articles")
     

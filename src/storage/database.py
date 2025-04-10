@@ -3,6 +3,8 @@ import logging
 import os
 from typing import Set
 
+from config.config import Config
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,4 +57,4 @@ class Database:
 
 
 # Global database instance
-db = Database() 
+db = Database(db_path=Config.TEST_DB_PATH) 

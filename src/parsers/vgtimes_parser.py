@@ -1,48 +1,34 @@
-import asyncio
+"""VGTimes parser for GamesParser project."""
+
 import json
-import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import aiohttp
 from bs4 import BeautifulSoup
 
+from src.common import logger
 from src.config.config import Config
+from src.parsers.utils.base_parser import BaseParser
 from src.storage.database import Database
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ArticleMetadata:
-    rating: Optional[int] = None
-    store_links: Dict[str, str] = None
-    images: List[str] = None
-    date: Optional[datetime] = None
+    """Metadata for VGTimes article."""
 
-    def dict(self) -> dict:
-        """Convert the Article to a dictionary for serialization."""
-        return {
-            "id": self.id,
-            "title": self.title,
-            "link": self.link,
-            "content": self.content,
-            "image_url": self.image_url,
-            "metadata": {
-                "rating": self.metadata.rating if self.metadata else None,
-                "store_links": self.metadata.store_links if self.metadata else None,
-                "images": self.metadata.images if self.metadata else None,
-                "date": self.metadata.date if self.metadata else None,
-            }
-            if self.metadata
-            else None,
-        }
+    rating: Optional[int] = None
+    store_links: dict = None
+    images: list = None
+    date: Optional[datetime] = None
 
 
 @dataclass
 class Article:
+    """VGTimes article data structure."""
+
     id: str
     title: str
     link: str
@@ -69,7 +55,9 @@ class Article:
         }
 
 
-class VGTimesParser:
+class VGTimesParser(BaseParser):
+    """Парсер для получения постов с VGTimes."""
+
     # Конфигурация парсера
     REQUEST_TIMEOUT = Config.REQUEST_TIMEOUT
     MAX_TEXT_LENGTH = Config.MAX_TEXT_LENGTH
@@ -77,7 +65,6 @@ class VGTimesParser:
     RATE_LIMIT_DELAY = 2  # Задержка между запросами в секундах
     TARGET_URLS = [
         "https://vgtimes.ru/free/",
-        "https://vgtimes.ru/gaming-news/",
     ]
 
     # CSS селекторы
@@ -93,48 +80,8 @@ class VGTimesParser:
     }
 
     def __init__(self):
-        self.headers = {"User-Agent": Config.USER_AGENT}
-        self.store_patterns = {
-            "Steam": re.compile(r"store\.steampowered\.com"),
-            "Epic Games": re.compile(r"epicgames\.com"),
-            "GOG": re.compile(r"gog\.com"),
-            "itch.io": re.compile(r"itch\.io"),
-        }
-        self.last_request_time = 0
-        self.session = None
+        super().__init__()
         self.database = Database()
-
-    async def __aenter__(self):
-        self.session = aiohttp.ClientSession(headers=self.headers)
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.session:
-            await self.session.close()
-
-    async def _rate_limit(self) -> None:
-        """Ограничение частоты запросов"""
-        current_time = asyncio.get_event_loop().time()
-        if current_time - self.last_request_time < self.RATE_LIMIT_DELAY:
-            await asyncio.sleep(
-                self.RATE_LIMIT_DELAY - (current_time - self.last_request_time)
-            )
-        self.last_request_time = current_time
-
-    def _clean_text(self, text: str) -> str:
-        """Clean text content."""
-        if not text:
-            return ""
-
-        # Remove extra whitespace and newlines
-        text = re.sub(r"\s+", " ", text)
-        text = text.strip()
-
-        # Remove script and style elements
-        text = re.sub(r"<script.*?</script>", "", text, flags=re.DOTALL)
-        text = re.sub(r"<style.*?</style>", "", text, flags=re.DOTALL)
-
-        return text
 
     def _clean_store_url(self, url: str) -> str:
         """Clean and validate store URL."""
@@ -148,8 +95,8 @@ class VGTimesParser:
 
         return url
 
-    def _extract_store_links(self, article_html) -> Dict[str, str]:
-        """Extract store links from article"""
+    def _extract_store_links(self, article_html) -> dict:
+        """Extract store links from article."""
         store_links = {}
         link_elements = article_html.select(self.SELECTORS["store_links"])
         for link in link_elements:
@@ -162,15 +109,20 @@ class VGTimesParser:
                 store_links["GOG"] = href
         return store_links
 
-    async def fetch_posts(self, url: str = None) -> List[Article]:
-        """Fetch and parse posts from VGTimes"""
+    async def fetch_posts(self, url: str = None) -> list:
+        """Fetch and parse posts from VGTimes."""
+        logger.info("[VGTimesParser] Starting fetch_posts...")
         all_articles = []
         urls = [url] if url else self.TARGET_URLS
 
         for target_url in urls:
+            logger.info(f"[VGTimesParser] Fetching URL: {target_url}")
+            if not target_url.startswith("https"):
+                target_url = "https://vgtimes.ru/" + target_url
             try:
                 headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                     "Accept-Language": "en-US,en;q=0.5",
                     "Connection": "keep-alive",
@@ -180,113 +132,109 @@ class VGTimesParser:
                 async with aiohttp.ClientSession(headers=headers) as session:
                     self.session = session
                     async with session.get(target_url) as response:
-                        logger.info(f"Fetching page from {target_url}")
+                        logger.info(f"[VGTimesParser] Fetching page from {target_url}")
                         html = await response.text()
-                        logger.info(f"Got response, length: {len(html)}")
+                        logger.info(f"[VGTimesParser] Got response, length: {len(html)}")
                         articles = self._process_page(html)
-
+                        logger.info(f"[VGTimesParser] Parsed {len(articles)} articles from page")
                         # Fetch full content for each article
                         for article in articles:
                             if article:
-                                # Skip if article is already in database
                                 if self.database.is_processed(article.id):
-                                    logger.info(f"Article {article.id} already processed, skipping")
+                                    logger.info(f"[VGTimesParser] Article {article.id} already processed, skipping")
                                     continue
-                                    
-                                content, date = await self._fetch_full_content(
-                                    article.id, article.link
-                                )
+                                content, date = await self._fetch_full_content(article.id, article.link)
                                 article.content = content
                                 if article.metadata:
-                                    # Ensure date is timezone-aware
                                     if date and date.tzinfo is None:
-                                        date = date.replace(
-                                            tzinfo=timezone(timedelta(hours=3))
-                                        )
+                                        date = date.replace(tzinfo=timezone(timedelta(hours=3)))
                                     article.metadata.date = date
-
                         all_articles.extend(articles)
             except Exception as e:
-                logger.error(f"Error fetching posts from {target_url}: {e}")
+                logger.error(
+                    f"[VGTimesParser] Error fetching posts from {target_url}: {e}",
+                    exc_info=True,
+                )
                 continue
-
+        logger.info(f"[VGTimesParser] fetch_posts returning {len(all_articles)} articles")
         return all_articles
 
-    def _process_page(self, html: str) -> List[Article]:
-        """Process HTML page and extract articles"""
+    def _process_page(self, html: str) -> list:
+        """Process HTML page and extract articles."""
         soup = BeautifulSoup(html, "html.parser")
         articles = soup.select(self.SELECTORS["articles"])
-        logger.info(f"Found {len(articles)} articles on page")
+        logger.info(
+            "Found %d articles on page",
+            len(articles),
+        )
 
         parsed_articles = []
         for article in articles:
             if parsed := self._parse_article(article):
                 parsed_articles.append(parsed)
 
-        logger.info(f"Successfully parsed {len(parsed_articles)} posts")
+        logger.info(
+            "Successfully parsed %d posts",
+            len(parsed_articles),
+        )
         return parsed_articles
 
     def _extract_id(self, url: str) -> Optional[str]:
-        """Extract article ID from URL"""
+        """Extract article ID from URL."""
         match = re.search(r"/(\d+)-", url)
         return match.group(1) if match else None
 
-    def _parse_article(self, article_html) -> Optional[Article]:
-        """Parse a single article element"""
+    def _extract_images(self, article_html) -> list:
+        images = []
+        image_elem = article_html.select_one(self.SELECTORS["image"])
+        if image_elem:
+            image_url = image_elem.get("data-src")
+            if image_url:
+                images.append(image_url)
+        for img in article_html.select("img[src]"):
+            src = img.get("src") or img.get("data-src")
+            if src and src not in images:
+                images.append(src)
+        return images
+
+    def _extract_date(self, date_elem) -> Optional[datetime]:
+        if date_elem:
+            date = self._parse_date(date_elem.get_text())
+            if date and date.tzinfo is None:
+                date = date.replace(tzinfo=timezone(timedelta(hours=3)))
+            return date
+        return None
+
+    def _extract_rating(self, rating_elem) -> Optional[int]:
         try:
-            # Find title and link
+            return int(rating_elem.get_text(strip=True).replace("-", "")) if rating_elem else None
+        except (ValueError, TypeError):
+            return None
+
+    def _parse_article(self, article_html) -> Optional[Article]:
+        try:
             link_elem = article_html.select_one(self.SELECTORS["link"])
             if not link_elem:
                 logger.warning("Could not find link element")
                 return None
-
             title = link_elem.get_text(strip=True)
             link = link_elem.get("href")
-
-            # Extract ID from link
+            if not link.startswith("https"):
+                link = "https://vgtimes.ru/" + link
             article_id = self._extract_id(link)
             if not article_id:
                 logger.warning(f"Could not extract ID from link: {link}")
                 return None
-
-            # Find image URL
             image_elem = article_html.select_one(self.SELECTORS["image"])
             image_url = image_elem.get("data-src") if image_elem else None
-
-            # Find rating
             rating_elem = article_html.select_one(self.SELECTORS["rating"])
-            try:
-                rating = int(rating_elem.get_text(strip=True).replace("-", "")) if rating_elem else None
-            except (ValueError, TypeError):
-                rating = None
-
-            # Extract store links
+            rating = self._extract_rating(rating_elem)
             store_links = self._extract_store_links(article_html)
-
-            # Find content
             content_elem = article_html.select_one(self.SELECTORS["content"])
-            content = (
-                self._clean_text(content_elem.get_text()) if content_elem else None
-            )
-
-            # Find date and ensure it's timezone-aware
+            content = self._clean_text(content_elem.get_text()) if content_elem else None
             date_elem = article_html.select_one(self.SELECTORS["date"])
-            date = None
-            if date_elem:
-                date = self._parse_date(date_elem.get_text())
-                if date and date.tzinfo is None:
-                    # If no timezone info, assume MSK (UTC+3)
-                    date = date.replace(tzinfo=timezone(timedelta(hours=3)))
-
-            # Collect all images
-            images = []
-            if image_url:
-                images.append(image_url)
-            for img in article_html.select("img[src]"):
-                src = img.get("src") or img.get("data-src")
-                if src and src not in images:
-                    images.append(src)
-
+            date = self._extract_date(date_elem)
+            images = self._extract_images(article_html)
             return Article(
                 id=article_id,
                 title=title,
@@ -294,26 +242,30 @@ class VGTimesParser:
                 content=content,
                 image_url=image_url,
                 metadata=ArticleMetadata(
-                    rating=rating, store_links=store_links, images=images, date=date
+                    rating=rating,
+                    store_links=store_links,
+                    images=images,
+                    date=date,
                 ),
             )
         except Exception as e:
-            logger.error(f"Error parsing article: {e}")
+            logger.error(f"Error parsing article: {e}", exc_info=True)
             return None
 
-    async def _fetch_full_content(
-        self, post_id: str, post_link: str
-    ) -> Tuple[str, datetime]:
+    async def _fetch_full_content(self, post_id: str, post_link: str) -> tuple:
         """Fetch the full content of a post."""
         try:
             # Remove any fragment identifiers from the URL
             clean_url = post_link.split("#")[0]
             logger.info(f"Fetching full content for post {post_id} from {clean_url}")
+            if not clean_url.startswith("https"):
+                clean_url = "https://vgtimes.ru/" + clean_url
 
             # Add referer header for the specific article
             headers = {
                 "Referer": "https://vgtimes.ru/free/",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
             }
@@ -321,13 +273,17 @@ class VGTimesParser:
             async with self.session.get(clean_url, headers=headers) as response:
                 if response.status != 200:
                     logger.warning(
-                        f"Failed to fetch content for post {post_id}, status: {response.status}"
+                        "Failed to fetch content for post %s, status: %s",
+                        post_id,
+                        response.status,
                     )
                     return "", None
 
                 html = await response.text()
                 logger.info(
-                    f"Got HTML response for post {post_id}, length: {len(html)}"
+                    "Got HTML response for post %s, length: %d",
+                    post_id,
+                    len(html),
                 )
                 soup = BeautifulSoup(html, "html.parser")
 
@@ -345,16 +301,17 @@ class VGTimesParser:
                         break
 
                 if not content:
-                    logger.warning(f"Could not find content for post {post_id}")
+                    logger.warning(
+                        "Could not find content for post %s",
+                        post_id,
+                    )
 
                 # Extract date from JSON-LD metadata
                 date = None
                 for script in soup.find_all("script", type="application/ld+json"):
                     try:
                         data = json.loads(script.string)
-                        if data.get("@type") == "NewsArticle" and data.get(
-                            "datePublished"
-                        ):
+                        if data.get("@type") == "NewsArticle" and data.get("datePublished"):
                             date_str = data["datePublished"].replace("MSK", "")
                             try:
                                 # Fix the date format by adding missing separators
@@ -367,16 +324,17 @@ class VGTimesParser:
                                     # If no timezone info, assume MSK (UTC+3)
                                     dt = dt.replace(tzinfo=timezone(timedelta(hours=3)))
                                 date = dt
-                                logger.info(
-                                    f"Successfully parsed date from JSON-LD metadata: {date}"
-                                )
+                                logger.info(f"Successfully parsed date from JSON-LD metadata: {date}")
                             except ValueError as e:
                                 logger.warning(
-                                    f"Invalid date format in JSON-LD metadata: {date_str}, error: {e}"
+                                    "Invalid date format in JSON-LD metadata: %s, error: %s",
+                                    date_str,
+                                    e,
+                                    exc_info=True,
                                 )
                             break
                     except (json.JSONDecodeError, AttributeError) as e:
-                        logger.warning(f"Error parsing JSON-LD metadata: {e}")
+                        logger.warning(f"Error parsing JSON-LD metadata: {e}", exc_info=True)
                         continue
 
                 if not date:
@@ -386,20 +344,16 @@ class VGTimesParser:
                         date_text = date_elem.get_text(strip=True)
                         date = self._parse_date(date_text)
                         if date:
-                            logger.info(
-                                f"Found date in HTML for post {post_id}: {date}"
-                            )
+                            logger.info(f"Found date in HTML for post {post_id}: {date}")
 
                 if not date:
                     logger.warning(f"Could not find date for post {post_id}")
 
-                logger.info(
-                    f"Successfully fetched content for post {post_id}, content length: {len(content)}"
-                )
+                logger.info(f"Successfully fetched content for post {post_id}, content length: {len(content)}")
                 return content, date
 
         except Exception as e:
-            logger.error(f"Error fetching content for post {post_id}: {e}")
+            logger.error(f"Error fetching content for post {post_id}: {e}", exc_info=True)
             return "", None
 
     def _parse_date(self, date_str: str) -> datetime:
@@ -451,7 +405,7 @@ class VGTimesParser:
             return dt
 
         except Exception as e:
-            logger.error(f"Error parsing date '{date_str}': {e}")
+            logger.error(f"Error parsing date '{date_str}': {e}", exc_info=True)
             return None
 
     def _is_store_url(self, url: str) -> bool:
@@ -486,5 +440,5 @@ class VGTimesParser:
             return match.group(1)
 
         except Exception as e:
-            logger.error(f"Error extracting post ID from URL {url}: {e}")
+            logger.error(f"Error extracting post ID from URL {url}: {e}", exc_info=True)
             return ""

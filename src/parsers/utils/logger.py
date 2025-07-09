@@ -1,13 +1,10 @@
-"""
-Logger setup module.
-"""
+"""Logger setup utility for GamesParser project (legacy, use src.common.logger)."""
 
 import logging
 
 
 def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
-    """
-    Set up a logger with the given name and level.
+    """Set up a logger with the given name and level.
 
     Args:
         name (str): Name of the logger
@@ -15,6 +12,7 @@ def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
 
     Returns:
         logging.Logger: The configured logger
+
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
@@ -24,9 +22,7 @@ def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
         handler = logging.StreamHandler()
         handler.setLevel(level)
 
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         handler.setFormatter(formatter)
 
         logger.addHandler(handler)

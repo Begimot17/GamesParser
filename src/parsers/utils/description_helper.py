@@ -1,11 +1,8 @@
-"""
-Helper module for generating descriptions.
-"""
+"""Description helper utilities for GamesParser project."""
 
 
 def generate_description(text: str, max_length: int = 200) -> str:
-    """
-    Generate a shortened description from the given text.
+    """Generate a shortened description from the given text.
 
     Args:
         text (str): The input text to generate description from
@@ -13,6 +10,7 @@ def generate_description(text: str, max_length: int = 200) -> str:
 
     Returns:
         str: The generated description
+
     """
     if not text:
         return ""

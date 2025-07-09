@@ -1,5 +1,6 @@
 from setuptools import find_namespace_packages, setup
 
+
 setup(
     name="games_parser",
     version="0.1",

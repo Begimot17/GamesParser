@@ -1,0 +1,100 @@
+[tool.poetry]
+name = "gamesparser"
+version = "0.1.0"
+description = ""
+authors = ["nikita-dyachkov <nikita.dyachkov@casafari.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.9,<4.0"
+aiohttp = ">=3.9.0"
+aiofiles = ">=23.2.1"
+beautifulsoup4 = ">=4.12.0"
+python-telegram-bot = ">=20.7"
+SQLAlchemy = ">=2.0.23"
+aiosqlite = ">=0.19.0"
+urllib3 = ">=2.1.0"
+requests = ">=2.31.0"
+lxml = ">=4.9.3"
+pydantic = ">=2.5.0"
+python-dotenv = ">=1.0.0"
+httpx = "^0.28.1"
+
+[tool.poetry.scripts]
+lint = "bash -c 'poetry run isort . && poetry run ruff format . && poetry run ruff check . --fix && poetry run pylint src'"
+
+[tool.poetry.dev-dependencies]
+pytest = ">=7.4.0"
+ruff = ">=0.1.9"
+pylint = "^3.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 120
+lint.select = [
+    "A", # flake8-builtins
+    "ASYNC", # flake8-async
+    "ARG", # flake8-unused-arguments
+    "B", # flake8-bugbear
+    "COM", # flake8-commas
+    "C4", # flake8-comprehensions
+    "ERA", # eradicate
+    "T20", # flake8-print
+    "Q", # flake8-quotes
+    "I", # isort
+    "N", # pep8-naming
+    "E", # pycodestyle errors
+    "W", # pycodestyle warnings
+    "F", # pyflakes
+    "FBT", # flake8-boolean-trap
+    "S", # flake8-bandit
+    "PIE", # flake8-pie
+    "T20", # flake8-print
+    "RSE", # flake8-raise
+    "TCH", # type-checking
+    "PGH",
+    "PTH",
+    "ICN"
+]
+lint.ignore = []
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = true
+force-wrap-aliases = true
+combine-as-imports = true
+lines-after-imports = 2
+
+[tool.isort]
+profile = "black"
+line_length = 120
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+
+[tool.pylint.'MESSAGES CONTROL']
+disable = [
+    # Docstring rules
+    "missing-class-docstring",          # C0115 - Missing docstring for a class
+    "missing-function-docstring",       # C0116 - Missing docstring for a function/method
+    "missing-module-docstring",         # C0114 - Missing docstring for a module
+
+    # Class/method complexity
+    "too-many-instance-attributes",     # R0902 - Too many attributes in a class instance - VALID but maybe need refactoring
+    "too-many-public-methods",          # R0904 - Too many public methods in a class - VALID but maybe need refactoring
+    "too-many-return-statements",
+    "too-many-locals",
+    "too-many-nested-blocks",
+    "too-few-public-methods",
+    "too-many-branches",
+    "too-many-statements",
+    "broad-exception-caught",           # W0718 - Catching a too broad Exception - VALID
+]
+max-line-length = 120
+
+[tool.pylint.BASIC]
+good-names = ["i", "j", "k", "ex", "Run", "_", "db"]

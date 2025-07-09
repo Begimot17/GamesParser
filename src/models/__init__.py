@@ -1,9 +1,6 @@
-"""
-Models Package
-
-A package containing data models for the application.
-"""
+"""Models Package."""
 
 from .models import Post, PostMetadata
+
 
 __all__ = ["Post", "PostMetadata"]

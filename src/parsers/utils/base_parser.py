@@ -1,12 +1,13 @@
 import asyncio
 import re
+from abc import ABC, abstractmethod
 
 import aiohttp
 
 from src.config.config import Config
 
 
-class BaseParser:
+class BaseParser(ABC):
     REQUEST_TIMEOUT: int = Config.REQUEST_TIMEOUT
     RATE_LIMIT_DELAY: int = 2
 
@@ -44,3 +45,13 @@ class BaseParser:
         text = re.sub(r"<style.*?</style>", "", text, flags=re.DOTALL)
         text = text.strip()
         return text
+
+    @abstractmethod
+    async def fetch_posts(self) -> list:
+        """Получить все посты сразу (старый метод)."""
+        pass
+
+    @abstractmethod
+    async def stream_posts(self):
+        """Генератор для потокового получения постов по мере их парсинга."""
+        pass

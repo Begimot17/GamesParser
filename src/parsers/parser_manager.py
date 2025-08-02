@@ -30,3 +30,23 @@ class ParserManager:
                 return []
         logger.info(f"[ParserManager] Total posts fetched: {len(all_posts)}")
         return all_posts
+
+    async def stream_posts(self):
+        """Генератор для потокового получения постов по мере их парсинга."""
+        logger.info("[ParserManager] Starting streaming posts from all parsers...")
+        
+        for parser in self.parsers:
+            logger.info(f"[ParserManager] Streaming posts using {type(parser).__name__}")
+            try:
+                async with parser:
+                    async for post in parser.stream_posts():
+                        if post:
+                            logger.info(f"[ParserManager] Yielding post {post.id} from {type(parser).__name__}")
+                            yield post
+                        else:
+                            logger.warning(f"[ParserManager] Received empty post from {type(parser).__name__}")
+            except Exception as e:
+                logger.error(f"[ParserManager] Error streaming posts from {type(parser).__name__}: {e}", exc_info=True)
+                continue
+        
+        logger.info("[ParserManager] Finished streaming posts from all parsers")

@@ -14,8 +14,7 @@ class Database(BaseStorage):
     def __init__(self, db_path: str = "news_bot.db"):
         super().__init__(db_path)
         self.db_path = db_path
-        self.processed_posts = set()
-        # Удаляю метод _load_data, чтобы использовать только из BaseStorage
+        # processed_posts уже загружены из BaseStorage.__init__(), не перезаписываем их
 
     def _save_data(self):
         """Сохранение данных в файл."""

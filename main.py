@@ -37,8 +37,10 @@ class NewsMonitor:
             if not posts:
                 logger.info("No new posts found")
                 return
-            logger.info("Found %d new posts", len(posts))
+            logger.info("Found %d posts", len(posts))
+            # Посты уже отфильтрованы в парсерах, но проверим еще раз для надежности
             new_posts = [post for post in posts if not self.storage.is_processed(post.id)]
+            logger.info("After additional filtering: %d new posts", len(new_posts))
             new_posts.sort(
                 key=lambda x: x.metadata.date
                 if x.metadata and x.metadata.date
@@ -46,9 +48,6 @@ class NewsMonitor:
             )
             for post in new_posts:
                 try:
-                    if self.storage.is_processed(post.id):
-                        logger.info(f"Post {post.id} was already processed, skipping...")
-                        continue
                     logger.info(f"Processing post {post.id}: {post.title}")
                     formatted_message = self.bot._format_message(post)
                     success = await self.bot.send_message(
@@ -67,14 +66,67 @@ class NewsMonitor:
         except Exception as e:
             logger.error(f"Error in process_new_posts: {e}")
 
-    async def run(self) -> None:
-        """Запуск основного цикла мониторинга."""
-        logger.info("Starting NewsMonitor...")
+    async def stream_and_process_posts(self) -> None:
+        """Потоковая обработка постов: парсинг и отправка по мере поступления."""
+        logger.info("Starting stream processing of posts...")
         try:
-            while True:
-                await self.process_new_posts()
-                logger.info(f"Waiting {Config.CHECK_INTERVAL} seconds before next check...")
-                await asyncio.sleep(Config.CHECK_INTERVAL)
+            async for post in self.parser_manager.stream_posts():
+                try:
+                    # Посты уже отфильтрованы в парсерах, здесь дополнительная проверка
+                    if self.storage.is_processed(post.id):
+                        logger.info(f"Post {post.id} already processed in main loop, skipping...")
+                        continue
+                    
+                    logger.info(f"Stream processing post {post.id}: {post.title}")
+                    
+                    # Check if post has required data (images for VGTimes, content for both)
+                    if hasattr(post, 'metadata') and post.metadata:
+                        images = getattr(post.metadata, 'images', [])
+                    else:
+                        images = []
+                    
+                    # Skip posts without images for now (can be configured)
+                    if not images:
+                        logger.info(f"Skipping post {post.id} - no images found")
+                        continue
+                    
+                    formatted_message = self.bot._format_message(post)
+                    success = await self.bot.send_message(
+                        text=formatted_message,
+                        images=images,
+                    )
+                    
+                    if success:
+                        self.storage.mark_as_processed(post.id)
+                        logger.info(f"Successfully stream processed and sent post {post.id}")
+                    else:
+                        logger.error(f"Failed to send stream processed post {post.id}")
+                    
+                    # Add delay between posts to avoid rate limiting
+                    await asyncio.sleep(3)
+                    
+                except Exception as e:
+                    logger.error(f"Error stream processing post {getattr(post, 'id', 'unknown')}: {e}", exc_info=True)
+                    continue
+        except Exception as e:
+            logger.error(f"Error in stream_and_process_posts: {e}", exc_info=True)
+
+    async def run(self, use_streaming: bool = True) -> None:
+        """Запуск основного цикла мониторинга."""
+        logger.info(f"Starting NewsMonitor in {'streaming' if use_streaming else 'batch'} mode...")
+        try:
+            if use_streaming:
+                # Потоковый режим - посты отправляются сразу после парсинга
+                while True:
+                    await self.stream_and_process_posts()
+                    logger.info("Waiting 10 minutes before next streaming cycle...")
+                    await asyncio.sleep(600)  # 10 минут между циклами
+            else:
+                # Обычный режим - сначала парсим все, потом отправляем
+                while True:
+                    await self.process_new_posts()
+                    logger.info(f"Waiting {Config.CHECK_INTERVAL} seconds before next check...")
+                    await asyncio.sleep(Config.CHECK_INTERVAL)
         except Exception as e:
             logger.error(f"Error in main loop: {e}")
         finally:
@@ -85,7 +137,8 @@ def main() -> None:
     """Точка входа в приложение."""
     try:
         monitor = NewsMonitor()
-        asyncio.run(monitor.run())
+        # Используем потоковый режим по умолчанию
+        asyncio.run(monitor.run(use_streaming=True))
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         sys.exit(1)

@@ -13,6 +13,8 @@ from common import logger
 from parsers.utils.base_parser import BaseParser
 from src.config.config import Config
 from src.models.models import Post, PostMetadata
+from src.services.llm_g4f import LLMG4F
+from src.storage.database import Database
 
 
 class PikabuParser(BaseParser):
@@ -45,6 +47,11 @@ class PikabuParser(BaseParser):
         "tags": "a.story__tag",
         "store_links": "a[href]",
     }
+
+    def __init__(self):
+        super().__init__()
+        self.llm = LLMG4F()
+        self.database = Database(Config.DB_PATH)
 
     async def __aenter__(self) -> "PikabuParser":
         """Вход в асинхронный контекстный менеджер."""
@@ -107,7 +114,7 @@ class PikabuParser(BaseParser):
             logger.info(f"[PikabuParser] Fetching page: {self.TARGET_URL}")
             response = await self._fetch_page(self.TARGET_URL)
             logger.info(f"[PikabuParser] Got response, length: {len(response)}")
-            posts = self._process_page(response)
+            posts = await self._process_page(response)
             logger.info(f"[PikabuParser] Parsed {len(posts)} posts from page")
             return posts
         except Exception as e:
@@ -130,14 +137,25 @@ class PikabuParser(BaseParser):
                 logger.warning(f"Попытка {attempt + 1} не удалась: {e}")
                 await asyncio.sleep(2**attempt)
 
-    def _process_page(self, html: str) -> list:
+    async def _process_page(self, html: str) -> list:
         """Обработка HTML страницы."""
         try:
             soup = BeautifulSoup(html, "html.parser")
             posts: list = []
             for article in soup.select(self.SELECTORS["articles"]):
                 try:
-                    post = self._parse_article(article)
+                    # Early check - extract post ID first
+                    post_id = article.get("data-story-id")
+                    if not post_id:
+                        continue
+                    
+                    # Skip if already processed (early check before LLM)
+                    if self.database.is_processed(post_id):
+                        logger.info(f"[PikabuParser] Post {post_id} already processed, skipping")
+                        continue
+                    
+                    # Now do full parsing since it's new
+                    post = await self._parse_article(article)
                     if post:
                         posts.append(post)
                 except Exception as e:
@@ -173,7 +191,7 @@ class PikabuParser(BaseParser):
             logger.error(f"Ошибка при нормализации URL {url}: {e}")
             return ""
 
-    def _parse_article(self, article: Tag) -> Optional[Post]:
+    async def _parse_article(self, article: Tag) -> Optional[Post]:
         """Парсинг статьи с главной страницы Pikabu."""
         try:
             post_id = article.get("data-story-id")
@@ -215,7 +233,27 @@ class PikabuParser(BaseParser):
                             if "/avatars/" in src:
                                 continue
                             images.append(src)
-            store_links = self._extract_store_links(content)
+            
+            # Get full page text and process with LLM
+            page_text = await self._fetch_full_page_text(link)
+            if page_text:
+                llm_data = await self.llm.extract_article_info(page_text, link)
+                
+                # Update with LLM extracted data
+                if llm_data.get('title'):
+                    title = llm_data['title']
+                if llm_data.get('content'):
+                    content = llm_data['content']
+                if llm_data.get('store_links'):
+                    # Only include store links that actually have URLs
+                    store_links = {k: v for k, v in llm_data['store_links'].items() if v and v.strip()}
+                else:
+                    store_links = self._extract_store_links(content)
+                if llm_data.get('images'):
+                    images.extend(llm_data['images'])
+            else:
+                store_links = self._extract_store_links(content)
+            
             metadata = PostMetadata(rating=rating, store_links=store_links, images=images, date=date)
             return Post(
                 id=post_id,
@@ -228,3 +266,83 @@ class PikabuParser(BaseParser):
         except Exception as e:
             logger.error(f"Ошибка при парсинге статьи Pikabu: {e}", exc_info=True)
             return None
+
+    async def stream_posts(self):
+        """Генератор для потокового получения постов по мере их парсинга."""
+        logger.info("[PikabuParser] Starting stream_posts...")
+        try:
+            await self._rate_limit()
+            logger.info(f"[PikabuParser] Streaming from page: {self.TARGET_URL}")
+            response = await self._fetch_page(self.TARGET_URL)
+            logger.info(f"[PikabuParser] Got response, length: {len(response)}")
+            
+            # Parse page
+            soup = BeautifulSoup(response, "html.parser")
+            articles = soup.select(self.SELECTORS["articles"])
+            logger.info(f"[PikabuParser] Found {len(articles)} articles on page")
+            
+            # Process each article individually with early DB check
+            for article in articles:
+                try:
+                    # Early check - extract post ID first
+                    post_id = article.get("data-story-id")
+                    if not post_id:
+                        continue
+                    
+                    # Skip if already processed (early check before LLM)
+                    if self.database.is_processed(post_id):
+                        logger.info(f"[PikabuParser] Post {post_id} already processed, skipping early")
+                        continue
+                    
+                    # Now do full parsing since it's new
+                    post = await self._parse_article(article)
+                    if post:
+                        logger.info(f"[PikabuParser] Yielding post {post.id}")
+                        yield post
+                except Exception as e:
+                    logger.error(f"[PikabuParser] Error processing individual article: {e}", exc_info=True)
+                    continue
+                    
+        except Exception as e:
+            logger.error("[PikabuParser] Unexpected error in stream_posts: %s", str(e), exc_info=True)
+        
+        logger.info("[PikabuParser] stream_posts completed")
+
+    async def _fetch_full_page_text(self, post_link: str) -> str:
+        """Fetch the full page text for LLM processing."""
+        try:
+            logger.info(f"Fetching full page text from {post_link}")
+            
+            if not self.session:
+                self.session = aiohttp.ClientSession(headers=self.headers)
+                
+            async with self.session.get(post_link, timeout=self.REQUEST_TIMEOUT) as response:
+                if response.status != 200:
+                    logger.warning(f"Failed to fetch page text, status: {response.status}")
+                    return ""
+
+                html = await response.text()
+                soup = BeautifulSoup(html, "html.parser")
+                
+                # Remove script and style elements
+                for script in soup(["script", "style", "nav", "header", "footer", "aside", ".sidebar"]):
+                    script.decompose()
+                
+                # Get text from the main content area
+                main_content = soup.select_one("article, .story, .post-content, main")
+                if main_content:
+                    text = main_content.get_text()
+                else:
+                    text = soup.get_text()
+                
+                # Clean up the text
+                lines = (line.strip() for line in text.splitlines())
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                text = ' '.join(chunk for chunk in chunks if chunk)
+                
+                logger.info(f"Extracted {len(text)} characters of text")
+                return text[:10000]  # Limit text length for LLM
+                
+        except Exception as e:
+            logger.error(f"Error fetching page text: {e}", exc_info=True)
+            return ""

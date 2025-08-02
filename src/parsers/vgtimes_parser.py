@@ -2,7 +2,7 @@
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -13,6 +13,7 @@ from src.common import logger
 from src.config.config import Config
 from src.parsers.utils.base_parser import BaseParser
 from src.storage.database import Database
+from src.services.llm_g4f import LLMG4F
 
 
 @dataclass
@@ -20,8 +21,8 @@ class ArticleMetadata:
     """Metadata for VGTimes article."""
 
     rating: Optional[int] = None
-    store_links: dict = None
-    images: list = None
+    store_links: dict = field(default_factory=dict)
+    images: list = field(default_factory=list)
     date: Optional[datetime] = None
 
 
@@ -81,7 +82,10 @@ class VGTimesParser(BaseParser):
 
     def __init__(self):
         super().__init__()
-        self.database = Database()
+        self.database = Database(Config.DB_PATH)
+        self.llm = LLMG4F()
+        logger.debug(f"[VGTimesParser] Initialized with database path: {Config.DB_PATH}")
+        logger.debug(f"[VGTimesParser] Database has {len(self.database.processed_posts)} processed posts")
 
     def _clean_store_url(self, url: str) -> str:
         """Clean and validate store URL."""
@@ -136,14 +140,48 @@ class VGTimesParser(BaseParser):
                         html = await response.text()
                         logger.info(f"[VGTimesParser] Got response, length: {len(html)}")
                         articles = self._process_page(html)
-                        logger.info(f"[VGTimesParser] Parsed {len(articles)} articles from page")
-                        # Fetch full content for each article
+                        logger.info(f"[VGTimesParser] Parsed {len(articles)} new articles from page")
+                        
+                        # Fetch full content and process with LLM (articles are already filtered)
                         for article in articles:
-                            if article:
-                                if self.database.is_processed(article.id):
-                                    logger.info(f"[VGTimesParser] Article {article.id} already processed, skipping")
-                                    continue
-                                content, date = await self._fetch_full_content(article.id, article.link)
+                            # Get full page text and extract date first
+                            page_text = await self._fetch_full_page_text(article.link)
+                            content, date = await self._fetch_full_content(article.id, article.link)
+                            
+                            if page_text:
+                                # Use LLM to extract structured information
+                                llm_data = await self.llm.extract_article_info(page_text, article.link)
+                                
+                                # Update article with LLM extracted data
+                                if llm_data.get('title'):
+                                    article.title = llm_data['title']
+                                if llm_data.get('content'):
+                                    article.content = llm_data['content']
+                                else:
+                                    article.content = content
+                                
+                                # Update metadata
+                                if article.metadata:
+                                    if llm_data.get('rating'):
+                                        article.metadata.rating = llm_data['rating']
+                                    if llm_data.get('store_links'):
+                                        # Only add store links that actually have URLs
+                                        valid_store_links = {k: v for k, v in llm_data['store_links'].items() if v}
+                                        if article.metadata.store_links is None:
+                                            article.metadata.store_links = {}
+                                        article.metadata.store_links.update(valid_store_links)
+                                    if llm_data.get('images'):
+                                        if article.metadata.images is None:
+                                            article.metadata.images = []
+                                        article.metadata.images.extend(llm_data.get('images', []))
+                                    # Keep the original date extraction logic
+                                    if date and date.tzinfo is None:
+                                        date = date.replace(tzinfo=timezone(timedelta(hours=3)))
+                                    article.metadata.date = date
+                                
+                                logger.info(f"[VGTimesParser] Enhanced article {article.id} with LLM data")
+                            else:
+                                # Fallback to original content extraction
                                 article.content = content
                                 if article.metadata:
                                     if date and date.tzinfo is None:
@@ -159,6 +197,129 @@ class VGTimesParser(BaseParser):
         logger.info(f"[VGTimesParser] fetch_posts returning {len(all_articles)} articles")
         return all_articles
 
+    async def stream_posts(self):
+        """Генератор для потокового получения статей по мере их парсинга."""
+        logger.info("[VGTimesParser] Starting stream_posts...")
+        urls = self.TARGET_URLS
+
+        for target_url in urls:
+            logger.info(f"[VGTimesParser] Streaming from URL: {target_url}")
+            if not target_url.startswith("https"):
+                target_url = "https://vgtimes.ru/" + target_url
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Cache-Control": "max-age=0",
+                }
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    self.session = session
+                    async with session.get(target_url) as response:
+                        logger.info(f"[VGTimesParser] Fetching page from {target_url}")
+                        html = await response.text()
+                        logger.info(f"[VGTimesParser] Got response, length: {len(html)}")
+                        
+                        # Parse articles from page and filter early
+                        soup = BeautifulSoup(html, "html.parser")
+                        all_articles = soup.select(self.SELECTORS["articles"])
+                        logger.info(f"[VGTimesParser] Found {len(all_articles)} articles on page")
+                        
+                        # Filter out processed articles before any parsing
+                        new_articles = []
+                        skipped_count = 0
+                        
+                        for article_html in all_articles:
+                            link_elem = article_html.select_one(self.SELECTORS["link"])
+                            if not link_elem:
+                                continue
+                                
+                            link = link_elem.get("href")
+                            if not link.startswith("https"):
+                                link = "https://vgtimes.ru/" + link
+                                
+                            article_id = self._extract_id(link)
+                            if not article_id:
+                                continue
+                                
+                            # Skip if already processed
+                            if self.database.is_processed(article_id):
+                                skipped_count += 1
+                                logger.info(f"[VGTimesParser] Article {article_id} already processed, skipping BEFORE parsing")
+                                continue
+                            else:
+                                logger.debug(f"[VGTimesParser] Article {article_id} is NEW, will process")
+                                
+                            new_articles.append(article_html)
+                        
+                        logger.info(f"[VGTimesParser] Skipped {skipped_count} already processed articles, streaming {len(new_articles)} new ones")
+                        
+                        # Process each new article individually
+                        for article_html in new_articles:
+                            try:
+                                # Create minimal article object (no heavy parsing)
+                                article = self._create_minimal_article(article_html)
+                                if article:
+                                    # Get full page text and extract date first
+                                    page_text = await self._fetch_full_page_text(article.link)
+                                    content, date = await self._fetch_full_content(article.id, article.link)
+                                    
+                                    if page_text:
+                                        # Use LLM to extract structured information
+                                        llm_data = await self.llm.extract_article_info(page_text, article.link)
+                                        
+                                        # Update article with LLM extracted data
+                                        if llm_data.get('title'):
+                                            article.title = llm_data['title']
+                                        if llm_data.get('content'):
+                                            article.content = llm_data['content']
+                                        else:
+                                            article.content = content
+                                        
+                                        # Update metadata
+                                        if article.metadata:
+                                            if llm_data.get('rating'):
+                                                article.metadata.rating = llm_data['rating']
+                                            if llm_data.get('store_links'):
+                                                # Only add store links that actually have URLs
+                                                valid_store_links = {k: v for k, v in llm_data['store_links'].items() if v}
+                                                if article.metadata.store_links is None:
+                                                    article.metadata.store_links = {}
+                                                article.metadata.store_links.update(valid_store_links)
+                                            if llm_data.get('images'):
+                                                if article.metadata.images is None:
+                                                    article.metadata.images = []
+                                                article.metadata.images.extend(llm_data.get('images', []))
+                                            # Keep the original date extraction logic
+                                            if date and date.tzinfo is None:
+                                                date = date.replace(tzinfo=timezone(timedelta(hours=3)))
+                                            article.metadata.date = date
+                                        
+                                        logger.info(f"[VGTimesParser] Enhanced article {article.id} with LLM data")
+                                    else:
+                                        # Fallback to original content extraction
+                                        article.content = content
+                                        if article.metadata:
+                                            if date and date.tzinfo is None:
+                                                date = date.replace(tzinfo=timezone(timedelta(hours=3)))
+                                            article.metadata.date = date
+                                    
+                                    logger.info(f"[VGTimesParser] Yielding article {article.id}")
+                                    yield article
+                                    
+                            except Exception as e:
+                                logger.error(f"[VGTimesParser] Error processing individual article: {e}", exc_info=True)
+                                continue
+                                
+            except Exception as e:
+                logger.error(f"[VGTimesParser] Error streaming posts from {target_url}: {e}", exc_info=True)
+                continue
+                
+        logger.info("[VGTimesParser] stream_posts completed")
+
     def _process_page(self, html: str) -> list:
         """Process HTML page and extract articles."""
         soup = BeautifulSoup(html, "html.parser")
@@ -168,13 +329,45 @@ class VGTimesParser(BaseParser):
             len(articles),
         )
 
-        parsed_articles = []
+        # Filter out processed articles before any parsing
+        new_articles = []
+        skipped_count = 0
+        
         for article in articles:
+            # Extract ID early to check database
+            link_elem = article.select_one(self.SELECTORS["link"])
+            if not link_elem:
+                continue
+                
+            link = link_elem.get("href")
+            if not link.startswith("https"):
+                link = "https://vgtimes.ru/" + link
+                
+            article_id = self._extract_id(link)
+            if not article_id:
+                continue
+                
+            # Skip if already processed
+            if self.database.is_processed(article_id):
+                skipped_count += 1
+                logger.info(f"[VGTimesParser] Article {article_id} already processed, skipping BEFORE parsing")
+                continue
+            else:
+                logger.debug(f"[VGTimesParser] Article {article_id} is NEW, will process")
+                
+            # Only parse articles that are new
+            new_articles.append(article)
+        
+        logger.info(f"[VGTimesParser] Skipped {skipped_count} already processed articles, parsing {len(new_articles)} new ones")
+
+        # Now parse only the new articles
+        parsed_articles = []
+        for article in new_articles:
             if parsed := self._parse_article(article):
                 parsed_articles.append(parsed)
 
         logger.info(
-            "Successfully parsed %d posts",
+            "Successfully parsed %d new posts",
             len(parsed_articles),
         )
         return parsed_articles
@@ -183,6 +376,37 @@ class VGTimesParser(BaseParser):
         """Extract article ID from URL."""
         match = re.search(r"/(\d+)-", url)
         return match.group(1) if match else None
+
+    def _create_minimal_article(self, article_html) -> Optional[Article]:
+        """Create minimal article object with basic info for streaming."""
+        try:
+            link_elem = article_html.select_one(self.SELECTORS["link"])
+            if not link_elem:
+                return None
+            
+            title = link_elem.get_text(strip=True)
+            link = link_elem.get("href")
+            if not link.startswith("https"):
+                link = "https://vgtimes.ru/" + link
+            
+            article_id = self._extract_id(link)
+            if not article_id:
+                return None
+            
+            # Extract basic image info
+            image_elem = article_html.select_one(self.SELECTORS["image"])
+            image_url = image_elem.get("data-src") if image_elem else None
+            
+            return Article(
+                id=article_id,
+                title=title,
+                link=link,
+                image_url=image_url,
+                metadata=ArticleMetadata()
+            )
+        except Exception as e:
+            logger.error(f"Error creating minimal article: {e}")
+            return None
 
     def _extract_images(self, article_html) -> list:
         images = []
@@ -251,6 +475,62 @@ class VGTimesParser(BaseParser):
         except Exception as e:
             logger.error(f"Error parsing article: {e}", exc_info=True)
             return None
+
+    async def _fetch_full_page_text(self, post_link: str) -> str:
+        """Fetch the full page text for LLM processing."""
+        try:
+            clean_url = post_link.split("#")[0]
+            logger.info(f"Fetching full page text from {clean_url}")
+            
+            if not clean_url.startswith("https"):
+                clean_url = "https://vgtimes.ru/" + clean_url
+
+            headers = {
+                "Referer": "https://vgtimes.ru/free/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            }
+
+            async with self.session.get(clean_url, headers=headers) as response:
+                if response.status != 200:
+                    logger.warning(f"Failed to fetch page text, status: {response.status}")
+                    return ""
+
+                html = await response.text()
+                soup = BeautifulSoup(html, "html.parser")
+                
+                # Remove unwanted elements more aggressively
+                for element in soup([
+                    "script", "style", "nav", "header", "footer", "aside", 
+                    ".breadcrumbs", ".navigation", ".menu", ".sidebar", 
+                    ".comments", ".social", ".ads", ".banner", ".promo",
+                    ".related", ".tags", ".author-info", ".share-buttons"
+                ]):
+                    element.decompose()
+                
+                # Get text from the main article content
+                main_content = soup.select_one(".article_text, .post-content, article, main")
+                if main_content:
+                    # Remove any remaining unwanted child elements
+                    for unwanted in main_content.select(".ads, .banner, .social, .related"):
+                        unwanted.decompose()
+                    text = main_content.get_text()
+                else:
+                    text = soup.get_text()
+                
+                # Clean up the text
+                lines = (line.strip() for line in text.splitlines())
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                text = ' '.join(chunk for chunk in chunks if chunk)
+                
+                logger.info(f"Extracted {len(text)} characters of text")
+                return text[:10000]  # Limit text length for LLM
+                
+        except Exception as e:
+            logger.error(f"Error fetching page text: {e}", exc_info=True)
+            return ""
 
     async def _fetch_full_content(self, post_id: str, post_link: str) -> tuple:
         """Fetch the full content of a post."""

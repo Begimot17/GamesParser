@@ -42,6 +42,20 @@ class MessageFormatter:
             metadata.append(f"📊 {rating_text}")
         return metadata
 
+    def _linkify_urls(self, text: str) -> str:
+        """Заменяет все http(s) ссылки на HTML-ссылки."""
+        import re
+        url_pattern = re.compile(r'(https?://[^\s]+)')
+        def repl(match):
+            url = match.group(0)
+            return f'<a href="{url}">ссылка</a>'
+        return url_pattern.sub(repl, text)
+
+    def _remove_long_underscores(self, text: str) -> str:
+        """Удаляет строки, состоящие из 10+ подчеркиваний подряд."""
+        import re
+        return re.sub(r'_ {0,}_+', '', text)
+
     def format_message(self, post: Post) -> str:
         """Форматирование сообщения для отправки."""
         try:
@@ -49,6 +63,10 @@ class MessageFormatter:
             stores_text = self._format_store_links(post)
             metadata = self._format_metadata(post)
             text = post.content
+            # Удаляем длинные подчеркивания
+            text = self._remove_long_underscores(text)
+            # Заменяем ссылки на HTML-ссылки
+            text = self._linkify_urls(text)
             text = text[:500] + "..." if len(text) > 500 else text
             message_parts = [
                 f"🎮 {title_link}",

@@ -5,6 +5,7 @@ import random
 from typing import Any, Callable
 
 from common import logger
+from telegram.error import TimedOut, NetworkError, RetryAfter
 
 
 class RetryHandler:
@@ -35,6 +36,27 @@ class RetryHandler:
         for attempt in range(self.max_retries):
             try:
                 return await func(*args, **kwargs)
+            except (TimedOut, NetworkError) as e:
+                last_error = e
+                delay = self.calculate_delay(attempt)
+                logger.warning(
+                    "Retry %d/%d after network/timeout error: %s. Waiting %.2f seconds...",
+                    attempt + 1,
+                    self.max_retries,
+                    e,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+            except RetryAfter as e:
+                last_error = e
+                delay = e.retry_after
+                logger.warning(
+                    "Retry %d/%d after rate limit error. Waiting %.2f seconds...",
+                    attempt + 1,
+                    self.max_retries,
+                    delay,
+                )
+                await asyncio.sleep(delay)
             except Exception as e:
                 last_error = e
                 delay = self.calculate_delay(attempt)

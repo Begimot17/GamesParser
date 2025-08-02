@@ -10,6 +10,8 @@ from urllib.parse import unquote, urlparse
 import httpx
 from telegram import Bot, InputMediaPhoto
 from telegram.constants import ParseMode
+from telegram.error import TimedOut, NetworkError, RetryAfter
+import html
 
 from common import logger
 from src.bot.message_formatter import MessageFormatter
@@ -20,7 +22,7 @@ from src.models.models import Post
 # Настройки таймаутов для HTTP-запросов
 DEFAULT_TIMEOUTS = {
     "connect": 30.0,  # Таймаут на установку соединения
-    "read": 60.0,  # Таймаут на чтение данных
+    "read": 120.0,  # Увеличенный таймаут на чтение данных для медиафайлов
     "write": 30.0,  # Таймаут на запись данных
     "pool": 30.0,  # Таймаут на получение соединения из пула
 }
@@ -44,6 +46,7 @@ class TelegramNewsBot:
         "retry_delay": DEFAULT_DELAYS["base_delay"],
         "max_retries": 5,
         "max_images": 10,
+        "validate_images": True,  # Проверять доступность изображений перед отправкой
     }
 
     def __init__(self, token: str, channel_id: str, config: dict = None):
@@ -79,6 +82,10 @@ class TelegramNewsBot:
             config={
                 "max_retries": self.config["max_retries"],
                 "base_delay": self.config["retry_delay"],
+                "backoff_factor": 2,
+                "jitter_range": 2,
+                "min_delay": 5,
+                "max_delay": 300,
             },
         )
         logger.info(f"[TelegramNewsBot] Bot initialized successfully for channel {channel_id}")
@@ -191,6 +198,8 @@ class TelegramNewsBot:
         text: str,
         images: Optional[list[str]] = None,
     ) -> bool:
+        # Очищаем текст от лишних отступов и пробелов
+        clean_text = self._clean_text(text)
         logger.info(
             f"TelegramNewsBot Sending message to channel {self.channel_id}. Images: {len(images) if images else 0}",
         )
@@ -203,19 +212,77 @@ class TelegramNewsBot:
                     if not clean_url:
                         logger.warning(f"TelegramNewsBot Skipping invalid image URL: {image_url}")
                         continue
-                    caption = text if i == 0 else None
+                    # Проверяем доступность изображения (если включено)
+                    if self.config.get("validate_images", True):
+                        if not await self._validate_image_url(clean_url):
+                            logger.warning(f"TelegramNewsBot Skipping unavailable image URL: {clean_url}")
+                            continue
+                    # Формируем caption только для первой картинки
+                    caption = None
+                    if i == 0:
+                        # Use the formatted message, cleaned and truncated to 1024 chars for Telegram caption
+                        caption = self._clean_final_message(text)[:1024]
                     media_group.append(InputMediaPhoto(media=clean_url, caption=caption, parse_mode=ParseMode.HTML))
                 if not media_group:
                     logger.warning("TelegramNewsBot No valid images to send")
                     return False
-                # Асинхронная отправка медиагруппы
-                result = await self.bot.send_media_group(chat_id=self.channel_id, media=media_group)
-                return bool(result)
-            # Если нет изображений, отправляем только текст
-            result = await self.bot.send_message(chat_id=self.channel_id, text=text, parse_mode=ParseMode.HTML)
+                
+                # Разбиваем большие медиагруппы на части (Telegram ограничивает до 10 медиафайлов)
+                max_media_per_group = 10
+                if len(media_group) > max_media_per_group:
+                    logger.info(f"TelegramNewsBot Splitting large media group ({len(media_group)} items) into smaller groups")
+                    success = True
+                    for i in range(0, len(media_group), max_media_per_group):
+                        group_slice = media_group[i:i + max_media_per_group]
+                        # Убираем caption у всех, кроме первой группы
+                        if i > 0:
+                            for media in group_slice:
+                                media.caption = None
+                        
+                        result = await self._send_with_retry(
+                            self.bot.send_media_group,
+                            chat_id=self.channel_id,
+                            media=group_slice
+                        )
+                        if not result:
+                            success = False
+                            break
+                        # Небольшая пауза между группами
+                        if i + max_media_per_group < len(media_group):
+                            await asyncio.sleep(2)
+                    return success
+                else:
+                    # Асинхронная отправка медиагруппы с повторными попытками
+                    result = await self._send_with_retry(
+                        self.bot.send_media_group,
+                        chat_id=self.channel_id,
+                        media=media_group
+                    )
+                    return bool(result)
+            # Если нет изображений, отправляем только текст с повторными попытками
+            result = await self._send_with_retry(
+                self.bot.send_message,
+                chat_id=self.channel_id,
+                text=self._clean_final_message(clean_text),
+                parse_mode=ParseMode.HTML
+            )
             return bool(result)
         except Exception as e:
             logger.error(f"TelegramNewsBot Error sending message: {e}", exc_info=True)
+            return False
+
+    async def _validate_image_url(self, url: str) -> bool:
+        """Проверяет доступность изображения по URL"""
+        try:
+            result = urlparse(url)
+            if not all([result.scheme, result.netloc]):
+                return False
+            
+            # Проверяем доступность изображения с таймаутом
+            response = await self.http_client.head(url, timeout=10.0)
+            return response.status_code == 200 and 'image' in response.headers.get('content-type', '')
+        except Exception as e:
+            logger.warning(f"Error validating image URL {url}: {e}")
             return False
 
     def _is_valid_url(self, url: str) -> bool:
@@ -245,6 +312,25 @@ class TelegramNewsBot:
         text = re.sub(r"https?://(?:store\.)?gog\.com/\S+", "", text)
         text = re.sub(r"https?://(?:store\.)?itch\.io/\S+", "", text)
         return text
+
+    def _clean_final_message(self, text: str) -> str:
+        """Удаляет лишние пустые строки и пробелы в начале/конце строк, оставляет максимум одну пустую строку подряд."""
+        lines = [line.strip() for line in text.splitlines()]
+        cleaned_lines = []
+        prev_empty = False
+        for line in lines:
+            if line == '':
+                if not prev_empty:
+                    cleaned_lines.append('')
+                prev_empty = True
+            else:
+                cleaned_lines.append(line)
+                prev_empty = False
+        return '\n'.join(cleaned_lines).strip()
+
+    def _escape_html(self, text: str) -> str:
+        """Escapes HTML special characters for Telegram captions."""
+        return html.escape(text)
 
     def _format_date(self, date_str: str) -> str:
         """Форматирование даты в формат DD.MM.YYYY."""

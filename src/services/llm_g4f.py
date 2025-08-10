@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from g4f.client import AsyncClient
 
-from services.llm_interface import LLMInterface
+from src.services.llm_interface import LLMInterface
 
 
 class LLMG4F(LLMInterface):

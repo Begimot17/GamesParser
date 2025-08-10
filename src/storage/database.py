@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from common import logger
+from src.common import logger
 from src.config.config import Config
 from src.storage.storage import BaseStorage
 

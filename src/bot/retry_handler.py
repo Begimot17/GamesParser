@@ -4,7 +4,7 @@ import asyncio
 import random
 from typing import Any, Callable
 
-from common import logger
+from src.common import logger
 from telegram.error import TimedOut, NetworkError, RetryAfter
 
 

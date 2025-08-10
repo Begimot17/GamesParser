@@ -13,7 +13,7 @@ from telegram.constants import ParseMode
 from telegram.error import TimedOut, NetworkError, RetryAfter
 import html
 
-from common import logger
+from src.common import logger
 from src.bot.message_formatter import MessageFormatter
 from src.bot.retry_handler import RetryHandler
 from src.models.models import Post

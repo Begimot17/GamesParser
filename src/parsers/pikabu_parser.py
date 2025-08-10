@@ -9,8 +9,8 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from bs4 import BeautifulSoup, Tag
 
-from common import logger
-from parsers.utils.base_parser import BaseParser
+from src.common import logger
+from src.parsers.utils.base_parser import BaseParser
 from src.config.config import Config
 from src.models.models import Post, PostMetadata
 from src.services.llm_g4f import LLMG4F

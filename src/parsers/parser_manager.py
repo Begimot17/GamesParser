@@ -1,6 +1,6 @@
 """Parser manager for GamesParser project."""
 
-from common import logger
+from src.common import logger
 from src.parsers.pikabu_parser import PikabuParser
 from src.parsers.vgtimes_parser import VGTimesParser
 

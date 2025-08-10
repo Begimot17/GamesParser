@@ -4,7 +4,7 @@ import asyncio
 import sys
 from datetime import datetime
 
-from common import logger
+from src.common import logger
 from src.bot.bot import TelegramNewsBot
 from src.config.config import Config
 from src.parsers.parser_manager import ParserManager

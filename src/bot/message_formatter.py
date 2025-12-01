@@ -34,6 +34,8 @@ class MessageFormatter:
         if not text:
             return ""
 
+        # Removed html.escape(text) from here. HTML escaping will be applied where needed.
+
         text = text.strip()
         text = re.sub(r"https?://(?:store\.)?steampowered\.com/\S+", "", text)
         text = re.sub(r"https?://(?:store\.)?epicgames\.com/\S+", "", text)
@@ -72,12 +74,14 @@ class MessageFormatter:
         if post.metadata and post.metadata.store_links:
             for store, url in post.metadata.store_links.items():
                 clean_url = self.clean_url(url)
-                store_links.append(f'<a href="{clean_url}">{store}</a>')
+                # Escape the store name before putting it into the link text
+                store_links.append(f'<a href="{clean_url}">{self.escape_html(store)}</a>')
         return " | ".join(store_links) if store_links else ""
 
     def format_message(self, post: Post) -> str:
         """Форматирование сообщения для отправки."""
         try:
+            # Title is already escaped in title_link
             title_link = f'<a href="{post.link}">{self.escape_html(post.title)}</a>'
             stores_text = self._format_store_links(post)
 
@@ -87,8 +91,10 @@ class MessageFormatter:
             if post.metadata and post.metadata.rating is not None:
                 metadata_parts.append(f"⭐ {post.metadata.rating}")
 
-            content = self.clean_text(post.content, final_clean=True)
-            content = content[:500] + "..." if len(content) > 500 else content
+            # Clean and then escape the content
+            cleaned_content = self.clean_text(post.content, final_clean=True)
+            escaped_content = self.escape_html(cleaned_content)
+            content = escaped_content[:500] + "..." if len(escaped_content) > 500 else escaped_content
 
             message_parts = [
                 f"🎮 {title_link}",

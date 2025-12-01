@@ -18,12 +18,14 @@ class MessageFormatter:
 
     def clean_url(self, url: str) -> str:
         """Очистка URL от реферальных параметров и валидация."""
-        if not url:
+        # Ensure url is a string before parsing
+        url_str = str(url) if not isinstance(url, str) else url
+        if not url_str:
             return ""
-        parsed = urlparse(url)
+        parsed = urlparse(url_str)
         clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
         if not parsed.scheme or not parsed.netloc:
-            logger.warning("Invalid URL format: %s", url)
+            logger.warning("Invalid URL format: %s", url_str)
             return ""
         if parsed.scheme != "https":
             clean_url = clean_url.replace("http://", "https://")
@@ -34,14 +36,12 @@ class MessageFormatter:
         if not text:
             return ""
 
-        # Removed html.escape(text) from here. HTML escaping will be applied where needed.
-
         text = text.strip()
         text = re.sub(r"https?://(?:store\.)?steampowered\.com/\S+", "", text)
         text = re.sub(r"https?://(?:store\.)?epicgames\.com/\S+", "", text)
         text = re.sub(r"https?://(?:store\.)?gog\.com/\S+", "", text)
         text = re.sub(r"https?://(?:store\.)?itch\.io/\S+", "", text)
-        text = re.sub(r"_+", "", text)
+        # Removed: text = re.sub(r"_+", "", text) # This might be causing issues with Telegram's HTML parsing
 
         if final_clean:
             lines = [line.strip() for line in text.splitlines()]
@@ -63,7 +63,17 @@ class MessageFormatter:
 
     def escape_html(self, text: str) -> str:
         """Экранирует специальные HTML-символы."""
-        return html.escape(text)
+        # Ensure text is a string before escaping
+        text_str = str(text) if not isinstance(text, str) else text
+        return html.escape(text_str)
+
+    def to_plain_text(self, html_text: str) -> str:
+        """Converts HTML text to plain text by removing tags and unescaping entities."""
+        # Remove HTML tags
+        clean = re.compile('<.*?>')
+        plain_text = re.sub(clean, '', html_text)
+        # Unescape HTML entities
+        return html.unescape(plain_text)
 
     def format_date(self, dt: Optional[datetime]) -> Optional[str]:
         """Форматирует дату в строку."""
@@ -73,23 +83,24 @@ class MessageFormatter:
         store_links = []
         if post.metadata and post.metadata.store_links:
             for store, url in post.metadata.store_links.items():
-                clean_url = self.clean_url(url)
+                # Ensure url is a string before passing to clean_url
+                clean_url = self.clean_url(str(url))
                 # Escape the store name before putting it into the link text
-                store_links.append(f'<a href="{clean_url}">{self.escape_html(store)}</a>')
+                store_links.append(f'<a href="{self.escape_html(clean_url)}">{self.escape_html(store)}</a>')
         return " | ".join(store_links) if store_links else ""
 
     def format_message(self, post: Post) -> str:
         """Форматирование сообщения для отправки."""
         try:
-            # Title is already escaped in title_link
-            title_link = f'<a href="{post.link}">{self.escape_html(post.title)}</a>'
+            # Ensure post.link is a string before escaping
+            title_link = f'<a href="{self.escape_html(str(post.link))}">{self.escape_html(post.title)}</a>'
             stores_text = self._format_store_links(post)
 
             metadata_parts = []
             if post.metadata and post.metadata.date:
-                metadata_parts.append(f"📅 {self.format_date(post.metadata.date)}")
+                metadata_parts.append(self.escape_html(f"📅 {self.format_date(post.metadata.date)}")) # Escaped
             if post.metadata and post.metadata.rating is not None:
-                metadata_parts.append(f"⭐ {post.metadata.rating}")
+                metadata_parts.append(self.escape_html(f"⭐ {post.metadata.rating}")) # Escaped
 
             # Clean and then escape the content
             cleaned_content = self.clean_text(post.content, final_clean=True)

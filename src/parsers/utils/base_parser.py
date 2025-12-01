@@ -6,6 +6,7 @@ from typing import Optional
 from urllib.parse import quote, urlparse, urljoin
 
 import aiohttp
+import aiofiles # Added import for aiofiles
 
 from src.common.logger import logger
 from src.config.config import Config
@@ -87,6 +88,26 @@ class BaseParser(ABC):
         except IOError as e:
             logger.error(f"Error saving HTML for {url}: {e}")
 
+    async def _save_fetched_html(self, html_content: str, url: str) -> None:
+        """Saves all fetched HTML content to a file."""
+        if not Config.SAVE_ALL_FETCHED_HTML:
+            logger.debug(f"Skipping saving fetched HTML for {url}: SAVE_ALL_FETCHED_HTML is false.")
+            return
+
+        if not os.path.exists(Config.FETCHED_HTML_DIR):
+            logger.info(f"Creating directory for fetched HTML: {Config.FETCHED_HTML_DIR}")
+            os.makedirs(Config.FETCHED_HTML_DIR)
+        
+        filename = f"{quote(url, safe='')}.html"
+        filepath = os.path.join(Config.FETCHED_HTML_DIR, filename)
+        
+        try:
+            async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
+                await f.write(html_content)
+            logger.info(f"Saved fetched HTML for {url} to {filepath}")
+        except IOError as e:
+            logger.error(f"Error saving fetched HTML for {url}: {e}")
+
     async def _fetch_page(self, url: str) -> str:
         """Выполнение HTTP запроса с повторными попытками."""
         max_retries = 3
@@ -96,7 +117,9 @@ class BaseParser(ABC):
                     self.session = aiohttp.ClientSession(headers=self.headers)
                 async with self.session.get(url, timeout=self.REQUEST_TIMEOUT) as response:
                     response.raise_for_status()
-                    return await response.text()
+                    html_content = await response.text()
+                    await self._save_fetched_html(html_content, url) # Save fetched HTML
+                    return html_content
             except Exception as e:
                 if attempt == max_retries - 1:
                     logger.error(f"Failed to fetch {url} after {max_retries} attempts: {e}", exc_info=True)

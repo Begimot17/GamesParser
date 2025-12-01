@@ -10,7 +10,7 @@ from telegram.constants import ParseMode
 from src.bot.message_formatter import MessageFormatter
 from src.bot.retry_handler import RetryHandler
 from src.common.logger import logger
-from src.models.models import Post
+from src.models.models import Post # Keep Post import for type hinting if needed elsewhere, but not for dummy creation here
 from src.storage.telegram_storage import TelegramStorage
 
 
@@ -80,12 +80,21 @@ class TelegramNewsBot:
 
     async def _send_text_message(self, text: str) -> bool:
         """Отправляет текстовое сообщение."""
-        clean_text = self.formatter.clean_text(text, final_clean=True)
+        # 'text' is already the fully formatted HTML message from formatter.format_message
+        message_content = text
+        
+        parse_mode = ParseMode.HTML
+        if len(message_content) > 4096: # Telegram text message limit
+            logger.warning(f"[TelegramNewsBot] Text message too long ({len(message_content)} chars), converting to plain text.")
+            message_content = self.formatter.to_plain_text(message_content)[:4096] # Truncate plain text
+            parse_mode = None # Send as plain text
+
+        logger.info(f"[TelegramNewsBot] Sending text message (first 500 chars): {message_content[:500]}")
         result = await self.retry_handler.run_with_retry(
             self.bot.send_message,
             chat_id=self.channel_id,
-            text=clean_text,
-            parse_mode=ParseMode.HTML,
+            text=message_content,
+            parse_mode=parse_mode,
         )
         return bool(result)
 
@@ -100,6 +109,9 @@ class TelegramNewsBot:
         if len(media_group) > max_media_per_group:
             return await self._send_large_media_group(media_group)
         else:
+            # Log the caption for the first media item
+            if media_group and media_group[0].caption:
+                logger.info(f"[TelegramNewsBot] Sending media group with caption (first 500 chars): {media_group[0].caption[:500]}")
             result = await self.retry_handler.run_with_retry(
                 self.bot.send_media_group,
                 chat_id=self.channel_id,
@@ -110,8 +122,19 @@ class TelegramNewsBot:
     async def _prepare_media_group(self, text: str, images: list[str]) -> list[InputMediaPhoto]:
         """Подготавливает список медиа для отправки."""
         media_group = []
-        caption = self.formatter.clean_text(text, final_clean=True)[:1024]
+        
+        # 'text' is already the fully formatted HTML message from formatter.format_message
+        caption_html = text
+        caption_plain = self.formatter.to_plain_text(caption_html)
 
+        parse_mode = ParseMode.HTML
+        caption_to_send = caption_html
+
+        if len(caption_html) > 1024: # Telegram media caption limit
+            logger.warning(f"[TelegramNewsBot] Media caption too long ({len(caption_html)} chars), converting to plain text.")
+            caption_to_send = caption_plain[:1021] + "..." if len(caption_plain) > 1024 else caption_plain # Truncate plain text
+            parse_mode = None # Send as plain text
+        
         for i, image_url in enumerate(images[: self.config["max_images"]]):
             clean_url = self.formatter.clean_url(image_url)
             if not clean_url or (self.config["validate_images"] and not await self._validate_image_url(clean_url)):
@@ -121,8 +144,8 @@ class TelegramNewsBot:
             media_group.append(
                 InputMediaPhoto(
                     media=clean_url,
-                    caption=caption if i == 0 else None,
-                    parse_mode=ParseMode.HTML,
+                    caption=caption_to_send if i == 0 else None,
+                    parse_mode=parse_mode,
                 ),
             )
         return media_group
@@ -136,7 +159,11 @@ class TelegramNewsBot:
             if i > 0:
                 for media in group_slice:
                     media.caption = None
+                    media.parse_mode = None # Ensure subsequent captions are plain text if first was
 
+            # Log the caption for the first media item in the slice
+            if group_slice and group_slice[0].caption:
+                logger.info(f"[TelegramNewsBot] Sending large media group slice with caption (first 500 chars): {group_slice[0].caption[:500]}")
             result = await self.retry_handler.run_with_retry(
                 self.bot.send_media_group,
                 chat_id=self.channel_id,

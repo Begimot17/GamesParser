@@ -144,6 +144,7 @@ class PikabuParser(BaseParser):
         page_text = await self._fetch_full_page_text(link, preloaded_html=preloaded_html)
         if page_text:
             llm_data = await self.llm.extract_article_info(page_text, link)
+            logger.info(f"[PikabuParser] LLM extracted data for {link}: {llm_data}")
 
             if llm_data.get("title"):
                 title = llm_data["title"]
@@ -207,6 +208,8 @@ class PikabuParser(BaseParser):
                             continue
                         images.append(src)
         
+        logger.info(f"[PikabuParser] Initial data for post {post_id}: content_len={len(content)}, images_count={len(images)}")
+
         return {
             "id": post_id,
             "title": title,
@@ -256,6 +259,7 @@ class PikabuParser(BaseParser):
                 html = await self._fetch_page(post_link)
             
             if not html:
+                logger.warning(f"No HTML fetched for {post_link}")
                 return ""
 
             soup = BeautifulSoup(html, "html.parser")
@@ -268,7 +272,7 @@ class PikabuParser(BaseParser):
             main_content = soup.select_one("article, .story, .post-content, main")
             text = main_content.get_text(separator=' ', strip=True) if main_content else soup.get_text(separator=' ', strip=True)
 
-            logger.info(f"Extracted {len(text)} characters of text")
+            logger.info(f"Extracted {len(text)} characters of text from {post_link} for LLM. HTML length: {len(html)}")
             return text[:10000]  # Limit text length for LLM
 
         except Exception as e:

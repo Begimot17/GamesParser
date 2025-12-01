@@ -21,13 +21,13 @@ def setup_logger():
     logger.addHandler(stdout_handler)
 
     # File Handler
-    file_handler = RotatingFileHandler("logs/app.log", maxBytes=1024 * 1024 * 5, backupCount=5)
+    file_handler = RotatingFileHandler("logs/app.log", maxBytes=1024 * 1024 * 5, backupCount=5, encoding='utf-8')
     file_handler.setLevel(log_level)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
     # Warning File Handler
-    warning_file_handler = RotatingFileHandler("logs/warnings.log", maxBytes=1024 * 1024 * 5, backupCount=2)
+    warning_file_handler = RotatingFileHandler("logs/warnings.log", maxBytes=1024 * 1024 * 5, backupCount=2, encoding='utf-8')
     warning_file_handler.setLevel(logging.WARNING)
     warning_file_handler.setFormatter(formatter)
     logger.addHandler(warning_file_handler)

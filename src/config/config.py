@@ -44,6 +44,8 @@ class Config:
     DB_PATH: str = os.getenv("TEST_DB_PATH" if DEBUG else "DB_PATH", "news_bot.db")
     SAVE_HTML: bool = os.getenv("SAVE_HTML", "false").lower() == "true"
     HTML_DIR: str = os.getenv("HTML_DIR", "html_articles")
+    SAVE_ALL_FETCHED_HTML: bool = os.getenv("SAVE_ALL_FETCHED_HTML", "false").lower() == "true" # New config option
+    FETCHED_HTML_DIR: str = os.getenv("FETCHED_HTML_DIR", "fetched_html") # New config option
 
     # LLM settings
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")

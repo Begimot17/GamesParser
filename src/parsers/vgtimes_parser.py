@@ -117,6 +117,7 @@ class VGTimesParser(BaseParser):
 
     def _parse_date(self, date_str: str) -> Optional[datetime]:
         """Parse date from string like '5 апреля 2025, 23:22'."""
+        logger.info(f"[VGTimesParser] Attempting to parse date string: '{date_str}'") # Changed to INFO
         try:
             date_str = re.sub(r"<i.*?</i>", "", date_str).strip()
             ru_to_en = {
@@ -166,6 +167,7 @@ class VGTimesParser(BaseParser):
                     if cleaned_url:
                         stores[store_name] = cleaned_url
                         break
+        logger.info(f"[VGTimesParser] Extracted store links: {stores}")
         return stores
 
     async def _update_post_with_llm_data(self, title: str, content: str, images: list, link: str, store_links: dict, preloaded_html: Optional[str] = None) -> tuple[str, str, list, dict]:
@@ -173,6 +175,7 @@ class VGTimesParser(BaseParser):
         page_text = await self._fetch_full_page_text(link, preloaded_html=preloaded_html)
         if page_text:
             llm_data = await self.llm.extract_article_info(page_text, link)
+            logger.info(f"[VGTimesParser] LLM extracted data for {link}: {llm_data}")
 
             if llm_data.get("title"):
                 title = llm_data["title"]
@@ -189,27 +192,43 @@ class VGTimesParser(BaseParser):
         """Parses the initial post data from the article tag."""
         link_elem = article_html.select_one(self.SELECTORS["link"])
         if not link_elem:
+            logger.warning("[VGTimesParser] No link element found in article.")
             return None
 
         link = link_elem.get("href")
+        if not link:
+            logger.warning("[VGTimesParser] Link element found but href attribute is empty.")
+            return None
+
         if not link.startswith("https://"):
             link = urljoin(self.TARGET_URLS[0], link)
 
         article_id = self._extract_id(link)
         if not article_id:
+            logger.warning(f"[VGTimesParser] Could not extract article ID from link: {link}")
             return None
 
         title_elem = article_html.select_one(self.SELECTORS["title"])
         title = title_elem.get_text(strip=True) if title_elem else ""
+        if not title:
+            logger.warning(f"[VGTimesParser] No title found for article {article_id}")
 
         image_elem = article_html.select_one(self.SELECTORS["image"])
         image_url = image_elem.get("data-src") if image_elem else None
+        if not image_url:
+            logger.info(f"[VGTimesParser] No image URL found for article {article_id}")
 
         rating_elem = article_html.select_one(self.SELECTORS["rating"])
         rating = rating_elem.get_text(strip=True) if rating_elem else None
 
         date_elem = article_html.select_one(self.SELECTORS["date"])
-        date = self._parse_date(date_elem.get_text(strip=True)) if date_elem else None
+        raw_date_text = date_elem.get_text(strip=True) if date_elem else ""
+        logger.info(f"[VGTimesParser] Raw date text from selector for article {article_id}: '{raw_date_text}'")
+        date = self._parse_date(raw_date_text) if raw_date_text else None
+        if not date:
+            logger.warning(f"[VGTimesParser] Could not parse date for article {article_id}")
+
+        logger.info(f"[VGTimesParser] Initial data for post {article_id}: title='{title}', link='{link}', image_url='{image_url}', rating='{rating}', date='{date}'")
 
         return {
             "id": article_id,
@@ -235,6 +254,7 @@ class VGTimesParser(BaseParser):
             title, content, images, store_links = await self._update_post_with_llm_data(
                 initial_data["title"], content, images, initial_data["link"], store_links, preloaded_html
             )
+            logger.info(f"[VGTimesParser] Final extracted data for post {post_id}: content_len={len(content)}, images_count={len(images)}, store_links_count={len(store_links)}")
 
             metadata = PostMetadata(
                 rating=initial_data["rating"],
@@ -260,18 +280,22 @@ class VGTimesParser(BaseParser):
     async def _fetch_full_page_text(self, post_link: str, preloaded_html: Optional[str] = None) -> str:
         """Fetch the full page text for LLM processing."""
         try:
+            logger.info(f"[VGTimesParser] Fetching full page text from {post_link}")
             if preloaded_html:
                 html = preloaded_html
             else:
                 html = await self._fetch_page(post_link)
             
             if not html:
+                logger.warning(f"[VGTimesParser] No HTML fetched for {post_link} for LLM processing.")
                 return ""
             soup = BeautifulSoup(html, "html.parser")
             for element in soup(["script", "style", "nav", "header", "footer", "aside"]):
                 element.decompose()
             main_content = soup.select_one(self.SELECTORS["content"])
-            return main_content.get_text(" ", strip=True) if main_content else ""
+            text = main_content.get_text(" ", strip=True) if main_content else ""
+            logger.info(f"[VGTimesParser] Extracted {len(text)} characters of text from {post_link} for LLM. HTML length: {len(html)}")
+            return text
         except Exception as e:
-            logger.error(f"Error fetching page text from {post_link}: {e}", exc_info=True)
+            logger.error(f"[VGTimesParser] Error fetching page text from {post_link}: {e}", exc_info=True)
             return ""

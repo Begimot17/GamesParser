@@ -14,8 +14,6 @@ pikabu:
       - "div.story-block_type_image img.story-image__image"
       - "div.story__image img"
       - "img.story__image"
-      - "div.story__content img"
-      - "div.story-block img"
       - "img[src*='story-image']"
       - "img[src*='story__image']"
       - "img[src*='story-block']"
@@ -50,8 +48,8 @@ vgtimes:
     image: "div.image_wrap.type0 img"
     rating: "div.rrating div.text"
     store_links: 'a.l_ks[target="_blank"]'
-    content: "div.article_text"
-    date: "div.date"
+    content: "div.news-item-content__text" # Updated content selector
+    date: "span.date" # Updated date selector
   stores:
     steam:
       domain: "store.steampowered.com"

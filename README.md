@@ -1,88 +1,68 @@
-# Games Parser
+# GamesParser
 
-A Python-based project for parsing and managing game-related content, featuring a Telegram bot interface and web scraping capabilities.
+GamesParser — это асинхронный парсер новостей из игровых порталов, который автоматически отправляет свежие посты в ваш Telegram-канал.
 
-## Features
+## Особенности
 
-- Telegram bot integration for interactive content delivery
-- Web scraping functionality using BeautifulSoup4
-- Asynchronous operations with aiohttp and aiofiles
-- SQLite database support with SQLAlchemy
-- Environment variable management with python-dotenv
-- Comprehensive testing setup with pytest
-- Code quality enforcement with ruff
+- **Асинхронность**: Построен на `asyncio` для эффективной обработки сетевых запросов.
+- **Многопоточность**: Поддерживает как пакетный, так и потоковый режимы работы.
+- **Расширяемость**: Легко добавлять новые парсеры для разных сайтов.
+- **Надежность**: Использует базу данных для отслеживания уже отправленных постов, чтобы избежать дублирования.
 
-## Requirements
+## Установка
 
-- Python 3.11 or higher
-- Dependencies listed in `requirements.txt`
+1.  **Клонируйте репозиторий:**
+    ```bash
+    git clone https://github.com/ваш-репозиторий/GamesParser.git
+    cd GamesParser
+    ```
 
-## Installation
+2.  **Создайте и активируйте виртуальное окружение:**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # Для Windows: venv\Scripts\activate
+    ```
 
-1. Clone the repository:
+3.  **Установите зависимости:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+## Настройка
+
+Проект использует переменные окружения для конфигурации. Создайте файл `.env` в корневой директории проекта и добавьте в него следующие переменные:
+
+```
+# Токен вашего Telegram-бота
+TELEGRAM_BOT_TOKEN="your_telegram_bot_token"
+
+# ID вашего Telegram-канала (например, @your_channel_name)
+TELEGRAM_CHANNEL_ID="@your_channel_name"
+
+# Путь к базе данных SQLite
+DB_PATH="posts.db"
+
+# Интервал проверки новостей в секундах (для пакетного режима)
+CHECK_INTERVAL=3600
+```
+
+## Запуск
+
+Для запуска парсера выполните команду:
+
 ```bash
-git clone <repository-url>
-cd GamesParser
+python main.py
 ```
 
-2. Create and activate a virtual environment:
-```bash
-python -m venv venv
-# On Windows
-venv\Scripts\activate
-# On Unix or MacOS
-source venv/bin/activate
+По умолчанию парсер запускается в **потоковом режиме** (`use_streaming=True`), который является рекомендуемым. В этом режиме посты отправляются сразу после их обнаружения.
+
+## Архитектура
+
+- `main.py`: Точка входа в приложение, управляет основным циклом работы.
+- `src/parsers/`: Директория с парсерами для разных сайтов.
+- `src/storage/`: Модули для работы с базой данных.
+- `src/bot/`: Клиент для взаимодействия с Telegram API.
+- `src/config/`: Конфигурация проекта.
+- `src.models`: Модели данных.
 ```
-
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Set up environment variables:
-   - Copy `env.example` to `.env`
-   - Fill in the required environment variables
-
-## Usage
-
-1. Start the bot:
-```bash
-# On Windows
-run.bat
-# On Unix or MacOS
-python src/main.py
-```
-
-## Project Structure
-
-```
-GamesParser/
-├── src/                    # Source code
-├── tests/                  # Test files
-├── html_articles/          # Scraped articles
-├── .env                    # Environment variables
-├── env.example            # Example environment variables
-├── requirements.txt       # Project dependencies
-├── setup.py              # Package configuration
-└── run.bat               # Windows startup script
-```
-
-## Development
-
-- Run tests:
-```bash
-pytest
-```
-
-- Check code quality:
-```bash
-ruff check .
-```
-
-## License
-
-[Add your license information here]
-
-## Contributing
-
-[Add contribution guidelines here] 
+- `TODO.md`: Файл с задачами по проекту.

@@ -4,6 +4,8 @@ import asyncio
 import sys
 from datetime import datetime
 
+from telegram.error import TimedOut, NetworkError, RetryAfter
+
 from src.common import logger
 from src.bot.bot import TelegramNewsBot
 from src.config.config import Config
@@ -29,6 +31,43 @@ class NewsMonitor:
         self.storage = PostStorage(db_path=Config.DB_PATH)
         logger.info("NewsMonitor initialized successfully")
 
+    async def _process_and_send_post(self, post) -> bool:
+        """
+        Обрабатывает и отправляет один пост, включая форматирование, отправку и пометку как обработанного.
+        """
+        post_id = getattr(post, 'id', 'unknown')
+        try:
+            logger.info(f"Processing post {post_id}: {post.title}")
+
+            if hasattr(post, 'metadata') and post.metadata:
+                images = getattr(post.metadata, 'images', [])
+            else:
+                images = []
+
+            formatted_message = self.bot._format_message(post)
+            success = await self.bot.send_message(
+                text=formatted_message,
+                images=images,
+            )
+
+            if success:
+                self.storage.mark_as_processed(post.id)
+                logger.info(f"Successfully processed and sent post {post.id}")
+            else:
+                logger.error(f"Failed to send post {post_id} after multiple retries.")
+            
+            return success
+        except (TimedOut, NetworkError) as e:
+            logger.error(f"Network error while sending post {post_id}: {e}. Will retry later.")
+            return False
+        except RetryAfter as e:
+            logger.warning(f"Rate limit hit for post {post_id}. Waiting {e.retry_after} seconds as suggested by Telegram.")
+            await asyncio.sleep(e.retry_after)
+            return False
+        except Exception as e:
+            logger.error(f"An unexpected error occurred while processing post {post_id}: {e}", exc_info=True)
+            return False
+
     async def process_new_posts(self) -> None:
         """Обработка новых постов: фильтрация, отправка, пометка как обработанных."""
         logger.info("Starting to process new posts...")
@@ -38,76 +77,34 @@ class NewsMonitor:
                 logger.info("No new posts found")
                 return
             logger.info("Found %d posts", len(posts))
-            # Посты уже отфильтрованы в парсерах, но проверим еще раз для надежности
+            
             new_posts = [post for post in posts if not self.storage.is_processed(post.id)]
             logger.info("After additional filtering: %d new posts", len(new_posts))
+            
             new_posts.sort(
                 key=lambda x: x.metadata.date
                 if x.metadata and x.metadata.date
                 else datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo),
             )
+            
             for post in new_posts:
-                try:
-                    logger.info(f"Processing post {post.id}: {post.title}")
-                    formatted_message = self.bot._format_message(post)
-                    success = await self.bot.send_message(
-                        text=formatted_message,
-                        images=post.metadata.images,
-                    )
-                    if success:
-                        self.storage.mark_as_processed(post.id)
-                        logger.info(f"Successfully processed post {post.id}")
-                    else:
-                        logger.error(f"Failed to send post {post.id}")
-                except Exception as e:
-                    logger.error(f"Error processing post {post.id}: {e}")
-                    continue
-                await asyncio.sleep(5)
+                await self._process_and_send_post(post)
+                await asyncio.sleep(5)  # Задержка между постами в пакетном режиме
         except Exception as e:
-            logger.error(f"Error in process_new_posts: {e}")
+            logger.error(f"Error in process_new_posts: {e}", exc_info=True)
 
     async def stream_and_process_posts(self) -> None:
         """Потоковая обработка постов: парсинг и отправка по мере поступления."""
         logger.info("Starting stream processing of posts...")
         try:
             async for post in self.parser_manager.stream_posts():
-                try:
-                    # Посты уже отфильтрованы в парсерах, здесь дополнительная проверка
-                    if self.storage.is_processed(post.id):
-                        logger.info(f"Post {post.id} already processed in main loop, skipping...")
-                        continue
-                    
-                    logger.info(f"Stream processing post {post.id}: {post.title}")
-                    
-                    # Check if post has required data (images for VGTimes, content for both)
-                    if hasattr(post, 'metadata') and post.metadata:
-                        images = getattr(post.metadata, 'images', [])
-                    else:
-                        images = []
-                    
-                    # Skip posts without images for now (can be configured)
-                    if not images:
-                        logger.info(f"Skipping post {post.id} - no images found")
-                        continue
-                    
-                    formatted_message = self.bot._format_message(post)
-                    success = await self.bot.send_message(
-                        text=formatted_message,
-                        images=images,
-                    )
-                    
-                    if success:
-                        self.storage.mark_as_processed(post.id)
-                        logger.info(f"Successfully stream processed and sent post {post.id}")
-                    else:
-                        logger.error(f"Failed to send stream processed post {post.id}")
-                    
-                    # Add delay between posts to avoid rate limiting
-                    await asyncio.sleep(3)
-                    
-                except Exception as e:
-                    logger.error(f"Error stream processing post {getattr(post, 'id', 'unknown')}: {e}", exc_info=True)
+                if self.storage.is_processed(post.id):
+                    logger.info(f"Post {post.id} already processed, skipping...")
                     continue
+                
+                await self._process_and_send_post(post)
+                await asyncio.sleep(3)  # Задержка между постами в потоковом режиме
+                
         except Exception as e:
             logger.error(f"Error in stream_and_process_posts: {e}", exc_info=True)
 

@@ -44,6 +44,10 @@ DB_PATH="posts.db"
 
 # Интервал проверки новостей в секундах (для пакетного режима)
 CHECK_INTERVAL=3600
+
+# URL-ы для парсеров (можно указывать несколько через запятую)
+VGTimes_URLS="https://vgtimes.ru/free/"
+Pikabu_URLS="https://pikabu.ru/community/steam"
 ```
 
 ## Запуск
@@ -64,5 +68,4 @@ python main.py
 - `src/bot/`: Клиент для взаимодействия с Telegram API.
 - `src/config/`: Конфигурация проекта.
 - `src.models`: Модели данных.
-```
 - `TODO.md`: Файл с задачами по проекту.

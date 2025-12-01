@@ -13,9 +13,12 @@ class Config:
 
     # Debug mode
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+
     # Telegram settings
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHANNEL_ID: str = os.getenv("TEST_CHANNEL_ID" if DEBUG else "TELEGRAM_CHANNEL_ID", "")
+
     # Parser settings
     CHECK_INTERVAL: int = int(os.getenv("CHECK_INTERVAL", "300"))
     MAX_POSTS_PER_CHECK: int = int(os.getenv("MAX_POSTS_PER_CHECK", "5"))
@@ -27,10 +30,23 @@ class Config:
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/91.0.4472.124 Safari/537.36",
     )
+
+    # Timing settings
+    POST_PROCESSING_DELAY: int = int(os.getenv("POST_PROCESSING_DELAY", "5"))
+    STREAM_POST_PROCESSING_DELAY: int = int(os.getenv("STREAM_POST_PROCESSING_DELAY", "3"))
+    STREAMING_CYCLE_DELAY: int = int(os.getenv("STREAMING_CYCLE_DELAY", "600"))
+
     # Storage settings
     DB_PATH: str = os.getenv("TEST_DB_PATH" if DEBUG else "DB_PATH", "news_bot.db")
     SAVE_HTML: bool = os.getenv("SAVE_HTML", "false").lower() == "true"
     HTML_DIR: str = os.getenv("HTML_DIR", "html_articles")
+
+    # LLM settings
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+
+    # Parser-specific URLs
+    VGTimes_URLS: list[str] = os.getenv("VGTimes_URLS", "https://vgtimes.ru/free/").split(",")
+    Pikabu_URLS: list[str] = os.getenv("Pikabu_URLS", "https://pikabu.ru/community/steam").split(",")
 
     @classmethod
     def validate(cls) -> bool:

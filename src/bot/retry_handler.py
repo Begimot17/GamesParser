@@ -4,8 +4,9 @@ import asyncio
 import random
 from typing import Any, Callable
 
+from telegram.error import NetworkError, RetryAfter, TimedOut
+
 from src.common import logger
-from telegram.error import TimedOut, NetworkError, RetryAfter
 
 
 class RetryHandler:

@@ -8,13 +8,14 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup, Tag
+from pydantic import ValidationError
 
 from src.common import logger
-from src.parsers.utils.base_parser import BaseParser
 from src.config.config import Config
 from src.models.models import Post, PostMetadata
+from src.parsers.utils.base_parser import BaseParser
 from src.services.llm_g4f import LLMG4F
-from src.storage.database import Database
+from src.storage.storage import JsonStorage
 
 
 class PikabuParser(BaseParser):
@@ -24,7 +25,7 @@ class PikabuParser(BaseParser):
     MAX_TEXT_LENGTH: int = Config.MAX_TEXT_LENGTH
     VALID_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
     RATE_LIMIT_DELAY: int = 2
-    TARGET_URL: str = "https://pikabu.ru/community/steam"
+    TARGET_URLS = Config.Pikabu_URLS
     SELECTORS = {
         "articles": "article[data-story-id]",
         "title": "h2.story__title a.story__title-link",
@@ -51,7 +52,7 @@ class PikabuParser(BaseParser):
     def __init__(self):
         super().__init__()
         self.llm = LLMG4F()
-        self.database = Database(Config.DB_PATH)
+        self.storage = JsonStorage(Config.DB_PATH)
 
     async def __aenter__(self) -> "PikabuParser":
         """Вход в асинхронный контекстный менеджер."""
@@ -109,17 +110,19 @@ class PikabuParser(BaseParser):
     async def fetch_posts(self) -> list:
         """Получение и обработка постов."""
         logger.info("[PikabuParser] Starting fetch_posts...")
-        try:
-            await self._rate_limit()
-            logger.info(f"[PikabuParser] Fetching page: {self.TARGET_URL}")
-            response = await self._fetch_page(self.TARGET_URL)
-            logger.info(f"[PikabuParser] Got response, length: {len(response)}")
-            posts = await self._process_page(response)
-            logger.info(f"[PikabuParser] Parsed {len(posts)} posts from page")
-            return posts
-        except Exception as e:
-            logger.error("[PikabuParser] Unexpected error in Pikabu parser: %s", str(e), exc_info=True)
-            return []
+        all_posts = []
+        for target_url in self.TARGET_URLS:
+            try:
+                await self._rate_limit()
+                logger.info(f"[PikabuParser] Fetching page: {target_url}")
+                response = await self._fetch_page(target_url)
+                logger.info(f"[PikabuParser] Got response, length: {len(response)}")
+                posts = await self._process_page(response)
+                logger.info(f"[PikabuParser] Parsed {len(posts)} posts from page")
+                all_posts.extend(posts)
+            except Exception as e:
+                logger.error(f"[PikabuParser] Unexpected error in Pikabu parser: {e}", exc_info=True)
+        return all_posts
 
     async def _fetch_page(self, url: str) -> str:
         """Выполнение HTTP запроса с повторными попытками."""
@@ -148,12 +151,12 @@ class PikabuParser(BaseParser):
                     post_id = article.get("data-story-id")
                     if not post_id:
                         continue
-                    
+
                     # Skip if already processed (early check before LLM)
-                    if self.database.is_processed(post_id):
+                    if self.storage.is_processed(post_id):
                         logger.info(f"[PikabuParser] Post {post_id} already processed, skipping")
                         continue
-                    
+
                     # Now do full parsing since it's new
                     post = await self._parse_article(article)
                     if post:
@@ -182,7 +185,7 @@ class PikabuParser(BaseParser):
             if url.startswith("//"):
                 url = f"https:{url}"
             elif url.startswith("/"):
-                base_url = base_url or self.TARGET_URL
+                base_url = base_url or self.TARGET_URLS[0]
                 url = urljoin(base_url, url)
             elif not urlparse(url).scheme:
                 url = f"https://{url}"
@@ -233,36 +236,38 @@ class PikabuParser(BaseParser):
                             if "/avatars/" in src:
                                 continue
                             images.append(src)
-            
+
             # Get full page text and process with LLM
             page_text = await self._fetch_full_page_text(link)
             if page_text:
                 llm_data = await self.llm.extract_article_info(page_text, link)
-                
+
                 # Update with LLM extracted data
-                if llm_data.get('title'):
-                    title = llm_data['title']
-                if llm_data.get('content'):
-                    content = llm_data['content']
-                if llm_data.get('store_links'):
+                if llm_data.get("title"):
+                    title = llm_data["title"]
+                if llm_data.get("content"):
+                    content = llm_data["content"]
+                if llm_data.get("store_links"):
                     # Only include store links that actually have URLs
-                    store_links = {k: v for k, v in llm_data['store_links'].items() if v and v.strip()}
+                    store_links = {k: v for k, v in llm_data["store_links"].items() if v and v.strip()}
                 else:
                     store_links = self._extract_store_links(content)
-                if llm_data.get('images'):
-                    images.extend(llm_data['images'])
+                if llm_data.get("images"):
+                    images.extend(llm_data["images"])
             else:
                 store_links = self._extract_store_links(content)
-            
+
             metadata = PostMetadata(rating=rating, store_links=store_links, images=images, date=date)
             return Post(
                 id=post_id,
                 title=title,
                 link=link,
                 content=content,
-                date=date,
                 metadata=metadata,
             )
+        except ValidationError as e:
+            logger.error(f"Validation error for post {post_id}: {e}")
+            return None
         except Exception as e:
             logger.error(f"Ошибка при парсинге статьи Pikabu: {e}", exc_info=True)
             return None
@@ -270,52 +275,53 @@ class PikabuParser(BaseParser):
     async def stream_posts(self):
         """Генератор для потокового получения постов по мере их парсинга."""
         logger.info("[PikabuParser] Starting stream_posts...")
-        try:
-            await self._rate_limit()
-            logger.info(f"[PikabuParser] Streaming from page: {self.TARGET_URL}")
-            response = await self._fetch_page(self.TARGET_URL)
-            logger.info(f"[PikabuParser] Got response, length: {len(response)}")
-            
-            # Parse page
-            soup = BeautifulSoup(response, "html.parser")
-            articles = soup.select(self.SELECTORS["articles"])
-            logger.info(f"[PikabuParser] Found {len(articles)} articles on page")
-            
-            # Process each article individually with early DB check
-            for article in articles:
-                try:
-                    # Early check - extract post ID first
-                    post_id = article.get("data-story-id")
-                    if not post_id:
+        for target_url in self.TARGET_URLS:
+            try:
+                await self._rate_limit()
+                logger.info(f"[PikabuParser] Streaming from page: {target_url}")
+                response = await self._fetch_page(target_url)
+                logger.info(f"[PikabuParser] Got response, length: {len(response)}")
+
+                # Parse page
+                soup = BeautifulSoup(response, "html.parser")
+                articles = soup.select(self.SELECTORS["articles"])
+                logger.info(f"[PikabuParser] Found {len(articles)} articles on page")
+
+                # Process each article individually with early DB check
+                for article in articles:
+                    try:
+                        # Early check - extract post ID first
+                        post_id = article.get("data-story-id")
+                        if not post_id:
+                            continue
+
+                        # Skip if already processed (early check before LLM)
+                        if self.storage.is_processed(post_id):
+                            logger.info(f"[PikabuParser] Post {post_id} already processed, skipping early")
+                            continue
+
+                        # Now do full parsing since it's new
+                        post = await self._parse_article(article)
+                        if post:
+                            logger.info(f"[PikabuParser] Yielding post {post.id}")
+                            yield post
+                    except Exception as e:
+                        logger.error(f"[PikabuParser] Error processing individual article: {e}", exc_info=True)
                         continue
-                    
-                    # Skip if already processed (early check before LLM)
-                    if self.database.is_processed(post_id):
-                        logger.info(f"[PikabuParser] Post {post_id} already processed, skipping early")
-                        continue
-                    
-                    # Now do full parsing since it's new
-                    post = await self._parse_article(article)
-                    if post:
-                        logger.info(f"[PikabuParser] Yielding post {post.id}")
-                        yield post
-                except Exception as e:
-                    logger.error(f"[PikabuParser] Error processing individual article: {e}", exc_info=True)
-                    continue
-                    
-        except Exception as e:
-            logger.error("[PikabuParser] Unexpected error in stream_posts: %s", str(e), exc_info=True)
-        
+
+            except Exception as e:
+                logger.error(f"[PikabuParser] Unexpected error in stream_posts: {e}", exc_info=True)
+
         logger.info("[PikabuParser] stream_posts completed")
 
     async def _fetch_full_page_text(self, post_link: str) -> str:
         """Fetch the full page text for LLM processing."""
         try:
             logger.info(f"Fetching full page text from {post_link}")
-            
+
             if not self.session:
                 self.session = aiohttp.ClientSession(headers=self.headers)
-                
+
             async with self.session.get(post_link, timeout=self.REQUEST_TIMEOUT) as response:
                 if response.status != 200:
                     logger.warning(f"Failed to fetch page text, status: {response.status}")
@@ -323,26 +329,26 @@ class PikabuParser(BaseParser):
 
                 html = await response.text()
                 soup = BeautifulSoup(html, "html.parser")
-                
+
                 # Remove script and style elements
                 for script in soup(["script", "style", "nav", "header", "footer", "aside", ".sidebar"]):
                     script.decompose()
-                
+
                 # Get text from the main content area
                 main_content = soup.select_one("article, .story, .post-content, main")
                 if main_content:
                     text = main_content.get_text()
                 else:
                     text = soup.get_text()
-                
+
                 # Clean up the text
                 lines = (line.strip() for line in text.splitlines())
                 chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                text = ' '.join(chunk for chunk in chunks if chunk)
-                
+                text = " ".join(chunk for chunk in chunks if chunk)
+
                 logger.info(f"Extracted {len(text)} characters of text")
                 return text[:10000]  # Limit text length for LLM
-                
+
         except Exception as e:
             logger.error(f"Error fetching page text: {e}", exc_info=True)
             return ""

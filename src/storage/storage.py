@@ -6,11 +6,11 @@ from pathlib import Path
 from src.common import logger
 
 
-class BaseStorage:
-    """Класс для хранения обработанных постов."""
+class JsonStorage:
+    """Класс для хранения обработанных постов в JSON-файле."""
 
     def __init__(self, db_path: str = "news_bot.db"):
-        """Инициализация PostStorage."""
+        """Инициализация JsonStorage."""
         self.db_path = db_path
         self.processed_posts = set()
         self._load_data()
@@ -50,7 +50,3 @@ class BaseStorage:
     def close(self) -> None:
         """Закрытие хранилища (сохраняет данные)."""
         self._save_data()
-
-
-class PostStorage(BaseStorage):
-    """Класс для хранения обработанных постов."""

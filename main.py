@@ -4,13 +4,13 @@ import asyncio
 import sys
 from datetime import datetime
 
-from telegram.error import TimedOut, NetworkError, RetryAfter
+from telegram.error import NetworkError, RetryAfter, TimedOut
 
-from src.common import logger
 from src.bot.bot import TelegramNewsBot
+from src.common.logger import logger
 from src.config.config import Config
 from src.parsers.parser_manager import ParserManager
-from src.storage.storage import PostStorage
+from src.storage.storage import JsonStorage
 
 
 class NewsMonitor:
@@ -28,19 +28,19 @@ class NewsMonitor:
             channel_id=Config.TELEGRAM_CHANNEL_ID,
         )
         self.parser_manager = ParserManager()
-        self.storage = PostStorage(db_path=Config.DB_PATH)
+        self.storage = JsonStorage(db_path=Config.DB_PATH)
         logger.info("NewsMonitor initialized successfully")
 
     async def _process_and_send_post(self, post) -> bool:
         """
         Обрабатывает и отправляет один пост, включая форматирование, отправку и пометку как обработанного.
         """
-        post_id = getattr(post, 'id', 'unknown')
+        post_id = getattr(post, "id", "unknown")
         try:
             logger.info(f"Processing post {post_id}: {post.title}")
 
-            if hasattr(post, 'metadata') and post.metadata:
-                images = getattr(post.metadata, 'images', [])
+            if hasattr(post, "metadata") and post.metadata:
+                images = getattr(post.metadata, "images", [])
             else:
                 images = []
 
@@ -55,13 +55,15 @@ class NewsMonitor:
                 logger.info(f"Successfully processed and sent post {post.id}")
             else:
                 logger.error(f"Failed to send post {post_id} after multiple retries.")
-            
+
             return success
         except (TimedOut, NetworkError) as e:
             logger.error(f"Network error while sending post {post_id}: {e}. Will retry later.")
             return False
         except RetryAfter as e:
-            logger.warning(f"Rate limit hit for post {post_id}. Waiting {e.retry_after} seconds as suggested by Telegram.")
+            logger.warning(
+                f"Rate limit hit for post {post_id}. Waiting {e.retry_after} seconds as suggested by Telegram.",
+            )
             await asyncio.sleep(e.retry_after)
             return False
         except Exception as e:
@@ -77,19 +79,19 @@ class NewsMonitor:
                 logger.info("No new posts found")
                 return
             logger.info("Found %d posts", len(posts))
-            
+
             new_posts = [post for post in posts if not self.storage.is_processed(post.id)]
             logger.info("After additional filtering: %d new posts", len(new_posts))
-            
+
             new_posts.sort(
                 key=lambda x: x.metadata.date
                 if x.metadata and x.metadata.date
                 else datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo),
             )
-            
+
             for post in new_posts:
                 await self._process_and_send_post(post)
-                await asyncio.sleep(5)  # Задержка между постами в пакетном режиме
+                await asyncio.sleep(Config.POST_PROCESSING_DELAY)
         except Exception as e:
             logger.error(f"Error in process_new_posts: {e}", exc_info=True)
 
@@ -101,10 +103,10 @@ class NewsMonitor:
                 if self.storage.is_processed(post.id):
                     logger.info(f"Post {post.id} already processed, skipping...")
                     continue
-                
+
                 await self._process_and_send_post(post)
-                await asyncio.sleep(3)  # Задержка между постами в потоковом режиме
-                
+                await asyncio.sleep(Config.STREAM_POST_PROCESSING_DELAY)
+
         except Exception as e:
             logger.error(f"Error in stream_and_process_posts: {e}", exc_info=True)
 
@@ -113,13 +115,11 @@ class NewsMonitor:
         logger.info(f"Starting NewsMonitor in {'streaming' if use_streaming else 'batch'} mode...")
         try:
             if use_streaming:
-                # Потоковый режим - посты отправляются сразу после парсинга
                 while True:
                     await self.stream_and_process_posts()
-                    logger.info("Waiting 10 minutes before next streaming cycle...")
-                    await asyncio.sleep(600)  # 10 минут между циклами
+                    logger.info(f"Waiting {Config.STREAMING_CYCLE_DELAY} seconds before next streaming cycle...")
+                    await asyncio.sleep(Config.STREAMING_CYCLE_DELAY)
             else:
-                # Обычный режим - сначала парсим все, потом отправляем
                 while True:
                     await self.process_new_posts()
                     logger.info(f"Waiting {Config.CHECK_INTERVAL} seconds before next check...")
@@ -134,10 +134,12 @@ def main() -> None:
     """Точка входа в приложение."""
     try:
         monitor = NewsMonitor()
-        # Используем потоковый режим по умолчанию
         asyncio.run(monitor.run(use_streaming=True))
+    except ValueError as e:
+        logger.error(f"Configuration error: {e}")
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"Fatal error: {e}")
+        logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
 
 

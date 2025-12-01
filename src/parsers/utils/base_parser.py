@@ -49,9 +49,7 @@ class BaseParser(ABC):
     @abstractmethod
     async def fetch_posts(self) -> list:
         """Получить все посты сразу (старый метод)."""
-        pass
 
     @abstractmethod
     async def stream_posts(self):
         """Генератор для потокового получения постов по мере их парсинга."""
-        pass

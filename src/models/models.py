@@ -3,22 +3,28 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, HttpUrl, field_validator
 
 
 class PostMetadata(BaseModel):
     """Мета-данные поста."""
 
-    rating: str = "0"
+    rating: Optional[int] = None
     store_links: dict = {}
     images: list = []
     date: Optional[datetime] = None
 
-    @field_validator("rating")
+    @field_validator("rating", mode="before")
     @classmethod
-    def clean_rating(cls, v: str) -> str:
-        """Очистка рейтинга."""
-        return v.strip() if v else "0"
+    def clean_rating(cls, v: str) -> Optional[int]:
+        """Очистка и преобразование рейтинга в число."""
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            v = v.strip().replace("-", "")
+            if v.isdigit():
+                return int(v)
+        return None
 
     @field_validator("store_links")
     @classmethod
@@ -38,11 +44,9 @@ class Post(BaseModel):
 
     id: str
     title: str
-    link: str
+    link: HttpUrl
     content: str
-    date: Optional[datetime] = None
     metadata: PostMetadata
-    created_at: Optional[datetime] = None
 
     @field_validator("id")
     @classmethod
@@ -58,14 +62,6 @@ class Post(BaseModel):
         """Очистка заголовка."""
         if not v.strip():
             raise ValueError("Title cannot be empty")
-        return v.strip()
-
-    @field_validator("link")
-    @classmethod
-    def clean_link(cls, v: str) -> str:
-        """Очистка ссылки."""
-        if not v.strip():
-            raise ValueError("Link cannot be empty")
         return v.strip()
 
     @field_validator("content")
@@ -73,28 +69,3 @@ class Post(BaseModel):
     def clean_content(cls, v: str) -> str:
         """Очистка контента."""
         return v.strip() if v else ""
-
-
-class ProcessedPost(BaseModel):
-    """Модель обработанного поста."""
-
-    id: str
-    title: str
-    link: str
-    processed_at: datetime
-
-    @field_validator("id")
-    @classmethod
-    def clean_id(cls, v: str) -> str:
-        """Очистка id."""
-        if not v.strip():
-            raise ValueError("ID cannot be empty")
-        return v.strip()
-
-    @field_validator("title")
-    @classmethod
-    def clean_title(cls, v: str) -> str:
-        """Очистка заголовка."""
-        if not v.strip():
-            raise ValueError("Title cannot be empty")
-        return v.strip()

@@ -1,424 +1,157 @@
 """Telegram bot logic for GamesParser project."""
 
 import asyncio
-import random
-import re
-from datetime import datetime
 from typing import Optional
-from urllib.parse import unquote, urlparse
 
 import httpx
 from telegram import Bot, InputMediaPhoto
 from telegram.constants import ParseMode
-from telegram.error import TimedOut, NetworkError, RetryAfter
-import html
 
-from src.common import logger
 from src.bot.message_formatter import MessageFormatter
 from src.bot.retry_handler import RetryHandler
+from src.common.logger import logger
 from src.models.models import Post
-
-
-# Настройки таймаутов для HTTP-запросов
-DEFAULT_TIMEOUTS = {
-    "connect": 30.0,  # Таймаут на установку соединения
-    "read": 120.0,  # Увеличенный таймаут на чтение данных для медиафайлов
-    "write": 30.0,  # Таймаут на запись данных
-    "pool": 30.0,  # Таймаут на получение соединения из пула
-}
-
-# Настройки задержек и ограничений
-DEFAULT_DELAYS = {
-    "base_delay": 30,  # Базовая задержка между запросами
-    "min_delay": 20,  # Минимальная задержка
-    "max_delay": 300,  # Максимальная задержка
-    "rate_limit_multiplier": 2,  # Множитель при превышении лимита
-    "backoff_factor": 2,  # Фактор экспоненциального роста
-    "jitter_range": 5,  # Разброс случайной задержки
-}
+from src.storage.telegram_storage import TelegramStorage
 
 
 class TelegramNewsBot:
     """Telegram bot for sending news posts to a channel."""
 
-    DEFAULTS = {
-        "message_delay": DEFAULT_DELAYS["base_delay"],
-        "retry_delay": DEFAULT_DELAYS["base_delay"],
-        "max_retries": 5,
-        "max_images": 10,
-        "validate_images": True,  # Проверять доступность изображений перед отправкой
-    }
-
-    def __init__(self, token: str, channel_id: str, config: dict = None):
+    def __init__(self, token: str, channel_id: str, config: Optional[dict] = None):
         logger.info(f"[TelegramNewsBot] Initializing bot for channel {channel_id}")
-        # Clean the token by removing any comments or extra text
+        if not token or not channel_id:
+            raise ValueError("Token and channel_id must be provided.")
+
         self.token = token.split("#")[0].strip()
-        if not self.token:
-            logger.error("[TelegramNewsBot] Invalid bot token provided")
-            raise ValueError("Invalid bot token provided")
-
         self.channel_id = channel_id
-        self.config = {**self.DEFAULTS, **(config or {})}
-        self.max_message_length = 4000
-        self.max_caption_length = 1024
+        self.config = self._get_default_config(config)
 
-        # Создаем HTTP-клиент с увеличенными таймаутами
-        self.http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(**DEFAULT_TIMEOUTS),
+        self.bot = Bot(token=self.token)
+        self.http_client = self._init_http_client()
+        self.retry_handler = self._init_retry_handler()
+        self.formatter = MessageFormatter()
+        self.telegram_storage = TelegramStorage()
+
+    def _get_default_config(self, config: Optional[dict]) -> dict:
+        """Возвращает конфигурацию по умолчанию, обновленную пользовательской конфигурацией."""
+        defaults = {
+            "message_delay": 30,
+            "retry_delay": 30,
+            "max_retries": 5,
+            "max_images": 10,
+            "validate_images": True,
+        }
+        return {**defaults, **(config or {})}
+
+    def _init_http_client(self) -> httpx.AsyncClient:
+        """Инициализирует и возвращает HTTP-клиент."""
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, read=120.0),
             limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
             transport=httpx.AsyncHTTPTransport(retries=3),
         )
-        self.bot = Bot(token=self.token)
-        self._processed_ids = set()
-        self._last_successful_request = datetime.now()
-        self._connection_errors = 0
-        self._max_connection_errors = 10
-        self._connection_error_window = 300  # 5 минут
-        self._rate_limit_errors = 0
-        self._last_rate_limit = None
-        self._rate_limit_window = 3600  # 1 час
-        self.formatter = MessageFormatter()
-        self.retry_handler = RetryHandler(
+
+    def _init_retry_handler(self) -> RetryHandler:
+        """Инициализирует и возвращает обработчик повторных попыток."""
+        return RetryHandler(
             config={
                 "max_retries": self.config["max_retries"],
                 "base_delay": self.config["retry_delay"],
-                "backoff_factor": 2,
-                "jitter_range": 2,
-                "min_delay": 5,
-                "max_delay": 300,
             },
         )
-        logger.info(f"[TelegramNewsBot] Bot initialized successfully for channel {channel_id}")
 
     async def close(self):
-        """Закрытие сессии бота."""
+        """Закрывает сессию бота."""
         logger.info("[TelegramNewsBot] Closing bot session...")
         if self.http_client:
             await self.http_client.aclose()
         logger.info("[TelegramNewsBot] Bot session closed.")
 
-    async def _check_connection(self) -> bool:
-        """Проверка состояния соединения."""
-        try:
-            # Проверяем время с последнего успешного запроса
-            time_since_last_success = (datetime.now() - self._last_successful_request).total_seconds()
+    async def send_message(self, text: str, images: Optional[list[str]] = None) -> bool:
+        """Отправляет сообщение в канал, выбирая подходящий метод."""
+        if images:
+            success = await self._send_media_group_message(text, images)
+        else:
+            success = await self._send_text_message(text)
 
-            # Если было много ошибок за короткое время, делаем паузу
-            if (
-                self._connection_errors >= self._max_connection_errors
-                and time_since_last_success < self._connection_error_window
-            ):
-                wait_time = min(300, self._connection_errors * 30)  # Максимум 5 минут
-                logger.warning(
-                    "Too many connection errors (%d). Waiting %d seconds...",
-                    self._connection_errors,
-                    wait_time,
-                )
-                await asyncio.sleep(wait_time)
-                self._connection_errors = 0
-                return False
+        if success:
+            self.telegram_storage.save_message(text, self.channel_id)
+        return success
 
-            # Проверяем соединение с Telegram API
-            self._last_successful_request = datetime.now()
-            self._connection_errors = 0
-            return True
+    async def _send_text_message(self, text: str) -> bool:
+        """Отправляет текстовое сообщение."""
+        clean_text = self.formatter.clean_text(text, final_clean=True)
+        result = await self.retry_handler.run_with_retry(
+            self.bot.send_message,
+            chat_id=self.channel_id,
+            text=clean_text,
+            parse_mode=ParseMode.HTML,
+        )
+        return bool(result)
 
-        except Exception as e:
-            logger.error(f"Connection check failed: {str(e)}")
-            self._connection_errors += 1
+    async def _send_media_group_message(self, text: str, images: list[str]) -> bool:
+        """Отправляет сообщение с группой медиа."""
+        media_group = await self._prepare_media_group(text, images)
+        if not media_group:
+            logger.warning("TelegramNewsBot No valid images to send")
             return False
 
-    async def _calculate_delay(self, attempt: int, *, is_rate_limit: bool = False) -> float:
-        """Расчет задержки с учетом всех факторов."""
-        base_delay = self.config["retry_delay"]
-
-        # Увеличиваем базовую задержку при превышении лимита
-        if is_rate_limit:
-            base_delay *= DEFAULT_DELAYS["rate_limit_multiplier"]
-            self._rate_limit_errors += 1
-
-        # Экспоненциальная задержка
-        delay = base_delay * (DEFAULT_DELAYS["backoff_factor"] ** attempt)
-
-        # Добавляем случайный джиттер
-        jitter = random.uniform(-DEFAULT_DELAYS["jitter_range"], DEFAULT_DELAYS["jitter_range"])  # noqa: S311
-        delay += jitter
-
-        # Ограничиваем задержку минимальным и максимальным значениями
-        delay = max(DEFAULT_DELAYS["min_delay"], min(delay, DEFAULT_DELAYS["max_delay"]))
-
-        return delay
-
-    async def _check_rate_limit(self) -> bool:
-        """Проверка состояния ограничений скорости."""
-        if self._last_rate_limit:
-            time_since_last_limit = (datetime.now() - self._last_rate_limit).total_seconds()
-
-            # Если было много ошибок за короткое время, увеличиваем задержку
-            if self._rate_limit_errors >= 3 and time_since_last_limit < self._rate_limit_window:
-                wait_time = min(600, self._rate_limit_errors * 60)  # Максимум 10 минут
-                logger.warning(
-                    "Too many rate limit errors (%d). Waiting %d seconds...",
-                    self._rate_limit_errors,
-                    wait_time,
-                )
-                await asyncio.sleep(wait_time)
-                return False
-
-        return True
-
-    async def _send_with_retry(self, method, *args, **kwargs):
-        """Отправка сообщения с повторными попытками (делегируется RetryHandler)"""
-        return await self.retry_handler.run_with_retry(method, *args, **kwargs)
-
-    def _split_text(self, text: str, max_length: int) -> list[str]:
-        """Разделение текста на части, не превышающие максимальную длину."""
-        if len(text) <= max_length:
-            return [text]
-
-        parts = []
-        current_part = ""
-        for line in text.split("\n"):
-            if len(current_part) + len(line) + 1 > max_length:
-                if current_part:
-                    parts.append(current_part.strip())
-                current_part = line
-            else:
-                if current_part:
-                    current_part += "\n"
-                current_part += line
-
-        if current_part:
-            parts.append(current_part.strip())
-
-        return parts
-
-    async def send_message(
-        self,
-        text: str,
-        images: Optional[list[str]] = None,
-    ) -> bool:
-        # Очищаем текст от лишних отступов и пробелов
-        clean_text = self._clean_text(text)
-        logger.info(
-            f"TelegramNewsBot Sending message to channel {self.channel_id}. Images: {len(images) if images else 0}",
-        )
-        try:
-            if images:
-                images = images[: self.config["max_images"]]
-                media_group = []
-                for i, image_url in enumerate(images):
-                    clean_url = self.formatter.clean_url(image_url)
-                    if not clean_url:
-                        logger.warning(f"TelegramNewsBot Skipping invalid image URL: {image_url}")
-                        continue
-                    # Проверяем доступность изображения (если включено)
-                    if self.config.get("validate_images", True):
-                        if not await self._validate_image_url(clean_url):
-                            logger.warning(f"TelegramNewsBot Skipping unavailable image URL: {clean_url}")
-                            continue
-                    # Формируем caption только для первой картинки
-                    caption = None
-                    if i == 0:
-                        # Use the formatted message, cleaned and truncated to 1024 chars for Telegram caption
-                        caption = self._clean_final_message(text)[:1024]
-                    media_group.append(InputMediaPhoto(media=clean_url, caption=caption, parse_mode=ParseMode.HTML))
-                if not media_group:
-                    logger.warning("TelegramNewsBot No valid images to send")
-                    return False
-                
-                # Разбиваем большие медиагруппы на части (Telegram ограничивает до 10 медиафайлов)
-                max_media_per_group = 10
-                if len(media_group) > max_media_per_group:
-                    logger.info(f"TelegramNewsBot Splitting large media group ({len(media_group)} items) into smaller groups")
-                    success = True
-                    for i in range(0, len(media_group), max_media_per_group):
-                        group_slice = media_group[i:i + max_media_per_group]
-                        # Убираем caption у всех, кроме первой группы
-                        if i > 0:
-                            for media in group_slice:
-                                media.caption = None
-                        
-                        result = await self._send_with_retry(
-                            self.bot.send_media_group,
-                            chat_id=self.channel_id,
-                            media=group_slice
-                        )
-                        if not result:
-                            success = False
-                            break
-                        # Небольшая пауза между группами
-                        if i + max_media_per_group < len(media_group):
-                            await asyncio.sleep(2)
-                    return success
-                else:
-                    # Асинхронная отправка медиагруппы с повторными попытками
-                    result = await self._send_with_retry(
-                        self.bot.send_media_group,
-                        chat_id=self.channel_id,
-                        media=media_group
-                    )
-                    return bool(result)
-            # Если нет изображений, отправляем только текст с повторными попытками
-            result = await self._send_with_retry(
-                self.bot.send_message,
-                chat_id=self.channel_id,
-                text=self._clean_final_message(clean_text),
-                parse_mode=ParseMode.HTML
+        max_media_per_group = 10
+        if len(media_group) > max_media_per_group:
+            return await self._send_large_media_group(media_group)
+        else:
+            result = await self.retry_handler.run_with_retry(
+                self.bot.send_media_group, chat_id=self.channel_id, media=media_group,
             )
             return bool(result)
-        except Exception as e:
-            logger.error(f"TelegramNewsBot Error sending message: {e}", exc_info=True)
-            return False
+
+    async def _prepare_media_group(self, text: str, images: list[str]) -> list[InputMediaPhoto]:
+        """Подготавливает список медиа для отправки."""
+        media_group = []
+        caption = self.formatter.clean_text(text, final_clean=True)[:1024]
+
+        for i, image_url in enumerate(images[: self.config["max_images"]]):
+            clean_url = self.formatter.clean_url(image_url)
+            if not clean_url or (self.config["validate_images"] and not await self._validate_image_url(clean_url)):
+                logger.warning(f"Skipping invalid or unavailable image URL: {image_url}")
+                continue
+
+            media_group.append(
+                InputMediaPhoto(
+                    media=clean_url,
+                    caption=caption if i == 0 else None,
+                    parse_mode=ParseMode.HTML,
+                ),
+            )
+        return media_group
+
+    async def _send_large_media_group(self, media_group: list[InputMediaPhoto]) -> bool:
+        """Отправляет большую медиагруппу по частям."""
+        logger.info(f"Splitting large media group ({len(media_group)} items)")
+        max_media_per_group = 10
+        for i in range(0, len(media_group), max_media_per_group):
+            group_slice = media_group[i : i + max_media_per_group]
+            if i > 0:
+                for media in group_slice:
+                    media.caption = None
+
+            result = await self.retry_handler.run_with_retry(
+                self.bot.send_media_group, chat_id=self.channel_id, media=group_slice,
+            )
+            if not result:
+                return False
+            await asyncio.sleep(2)
+        return True
 
     async def _validate_image_url(self, url: str) -> bool:
-        """Проверяет доступность изображения по URL"""
+        """Проверяет доступность изображения по URL."""
         try:
-            result = urlparse(url)
-            if not all([result.scheme, result.netloc]):
-                return False
-            
-            # Проверяем доступность изображения с таймаутом
             response = await self.http_client.head(url, timeout=10.0)
-            return response.status_code == 200 and 'image' in response.headers.get('content-type', '')
+            return response.status_code == 200 and "image" in response.headers.get("content-type", "")
         except Exception as e:
             logger.warning(f"Error validating image URL {url}: {e}")
             return False
 
-    def _is_valid_url(self, url: str) -> bool:
-        """Проверяет валидность URL"""
-        try:
-            result = urlparse(url)
-            return all([result.scheme, result.netloc])
-        except Exception as e:
-            logger.error(f"Error validating URL {url}: {e}")
-            return False
-
-    def _clean_text(self, text: str) -> str:
-        """Очистка текста от всех отступов и форматирования."""
-        if not text:
-            return ""
-        # Убираем все пробельные символы в начале и конце
-        text = text.strip()
-        # Заменяем все последовательности пробельных символов на один пробел
-        text = re.sub(r"\s+", " ", text)
-        # Заменяем множественные переносы строк на один пробел
-        text = re.sub(r"\n+", " ", text)
-        # Убираем множественные точки
-        text = re.sub(r"\.{3,}", "...", text)
-        # Удаляем ссылки на магазины
-        text = re.sub(r"https?://(?:store\.)?steampowered\.com/\S+", "", text)
-        text = re.sub(r"https?://(?:store\.)?epicgames\.com/\S+", "", text)
-        text = re.sub(r"https?://(?:store\.)?gog\.com/\S+", "", text)
-        text = re.sub(r"https?://(?:store\.)?itch\.io/\S+", "", text)
-        return text
-
-    def _clean_final_message(self, text: str) -> str:
-        """Удаляет лишние пустые строки и пробелы в начале/конце строк, оставляет максимум одну пустую строку подряд."""
-        lines = [line.strip() for line in text.splitlines()]
-        cleaned_lines = []
-        prev_empty = False
-        for line in lines:
-            if line == '':
-                if not prev_empty:
-                    cleaned_lines.append('')
-                prev_empty = True
-            else:
-                cleaned_lines.append(line)
-                prev_empty = False
-        return '\n'.join(cleaned_lines).strip()
-
-    def _escape_html(self, text: str) -> str:
-        """Escapes HTML special characters for Telegram captions."""
-        return html.escape(text)
-
-    def _format_date(self, date_str: str) -> str:
-        """Форматирование даты в формат DD.MM.YYYY."""
-        try:
-            for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]:
-                try:
-                    date = datetime.strptime(date_str, fmt)
-                    return date.strftime("%d.%m.%Y")
-                except ValueError:
-                    continue
-            return date_str
-        except Exception as e:
-            logger.warning(f"Error formatting date {date_str}: {e}")
-            return date_str
-
-    def _format_store_link(self, store_name: str, store_url: str) -> str:
-        """Форматирование ссылки на магазин."""
-        store_name = self._clean_text(store_name)
-        if store_name.lower() == "steam":
-            return f"🎮 Steam: {store_url}"
-        if store_name.lower() == "epic games":
-            return f"🎮 Epic: {store_url}"
-        if store_name.lower() == "gog":
-            return f"🎮 GOG: {store_url}"
-        return f"🎮 {store_name}: {store_url}"
-
-    def _safe_unquote(self, text: str) -> str:
-        """Безопасное декодирование URL-encoded строки."""
-        try:
-            if "%" in text:
-                return unquote(text)
-            return text
-        except Exception as e:
-            logger.warning(f"Error decoding text: {e}")
-            return text
-
     def _format_message(self, post: Post) -> str:
-        """Форматирование сообщения для отправки (делегируется MessageFormatter)."""
+        """Форматирует сообщение для отправки."""
         return self.formatter.format_message(post)
-
-    async def send_new_posts(self, new_posts: list[Post]) -> list[int]:
-        """Отправка новых постов в канал."""
-        sent_post_ids = []
-        for post in new_posts:
-            try:
-                # Пропускаем посты без изображений
-                if not post.images:
-                    logger.info(f"Skipping post {post.id} - no images found")
-                    continue
-
-                # Проверяем, не был ли пост уже отправлен
-                if post.id in self._processed_ids:
-                    logger.info(f"Post {post.id} was already sent, skipping...")
-                    continue
-
-                # Форматируем сообщение
-                message = self._format_message(post)
-
-                # Отправляем сообщение
-                success = await self.send_message(
-                    text=message,
-                    images=post.images[: self.config["max_images"]] if post.images else None,
-                )
-
-                if success:
-                    # Помечаем пост как отправленный только при успешной отправке
-                    self._processed_ids.add(post.id)
-                    sent_post_ids.append(post.id)
-                    logger.info(f"Successfully sent post {post.id}")
-
-                    # Увеличиваем задержку между постами
-                    delay = await self._calculate_delay(0, is_rate_limit=self._rate_limit_errors > 0)
-                    await asyncio.sleep(delay)
-                else:
-                    # Если отправка не удалась, не помечаем пост как отправленный
-                    logger.error(f"Failed to send post {post.id}")
-                    # Очищаем _processed_ids для этого поста, чтобы можно было попробовать снова
-                    self._processed_ids.discard(post.id)
-                    # Увеличиваем задержку при ошибке
-                    delay = await self._calculate_delay(1, is_rate_limit=True)
-                    await asyncio.sleep(delay)
-
-            except Exception as e:
-                logger.error(f"Error processing post {post.id}: {str(e)}", exc_info=True)
-                # При ошибке также очищаем _processed_ids для этого поста
-                self._processed_ids.discard(post.id)
-                # Увеличиваем задержку при ошибке
-                delay = await self._calculate_delay(1, is_rate_limit=True)
-                await asyncio.sleep(delay)
-
-        return sent_post_ids

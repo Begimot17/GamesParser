@@ -1,49 +1,38 @@
-"""
-Provide logging configuration.
-"""
-
 import logging
-import os
 import sys
+from logging.handlers import RotatingFileHandler
 
-from src.common.constants import GAMES_PARSER_STR
-from src.common.singleton import Singleton
+from src.config.config import Config
 
 
-class Logger(metaclass=Singleton):
-    log_level_str = os.environ.get("LOG_LEVEL", "DEBUG")
+def setup_logger():
+    """Настраивает и возвращает логгер."""
+    log_level = Config.LOG_LEVEL
+    logger = logging.getLogger(__name__)
+    logger.setLevel(log_level)
 
-    def __init__(self):
-        logging.basicConfig(
-            level=logging.INFO,
-            format="[%(asctime)s] %(levelname)-8s %(filename)s:%(lineno)d -> %(message)s",
-        )
+    # Formatter
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-        self.logger = logging.getLogger(GAMES_PARSER_STR)
-        self.logger.propagate = False
-        self.logger.setLevel(logging.getLevelName(self.log_level_str))
+    # Console Handler
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(log_level)
+    stdout_handler.setFormatter(formatter)
+    logger.addHandler(stdout_handler)
 
-        if not self.logger.handlers:
-            handler = logging.StreamHandler(sys.stdout)
-            formatter = logging.Formatter(
-                "[%(asctime)s] %(levelname)-8s %(filename)s:%(lineno)d -> %(message)s",
-            )
-            handler.setFormatter(formatter)
-            self.logger.addHandler(handler)
+    # File Handler
+    file_handler = RotatingFileHandler("logs/app.log", maxBytes=1024 * 1024 * 5, backupCount=5)
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
-        logging.info("Logger initialized")
+    # Warning File Handler
+    warning_file_handler = RotatingFileHandler("logs/warnings.log", maxBytes=1024 * 1024 * 5, backupCount=2)
+    warning_file_handler.setLevel(logging.WARNING)
+    warning_file_handler.setFormatter(formatter)
+    logger.addHandler(warning_file_handler)
 
-    def debug(self, msg, *args, **kwargs):
-        self.logger.debug(msg, *args, stacklevel=2, **kwargs)
+    return logger
 
-    def info(self, msg, *args, **kwargs):
-        self.logger.info(msg, *args, stacklevel=2, **kwargs)
 
-    def warning(self, msg, *args, **kwargs):
-        self.logger.warning(msg, *args, stacklevel=2, **kwargs)
-
-    def error(self, msg, *args, **kwargs):
-        self.logger.error(msg, *args, stacklevel=2, **kwargs)
-
-    def critical(self, msg, *args, **kwargs):
-        self.logger.critical(msg, *args, stacklevel=2, **kwargs)
+logger = setup_logger()

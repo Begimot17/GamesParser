@@ -1,7 +1,8 @@
 """Configuration for GamesParser project."""
 
 import os
-
+import yaml
+from pathlib import Path
 from dotenv import load_dotenv
 
 
@@ -10,6 +11,9 @@ load_dotenv()
 
 class Config:
     """Класс для хранения и валидации конфигурации приложения."""
+
+    # Base directory
+    BASE_DIR = Path(__file__).resolve().parent
 
     # Debug mode
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
@@ -44,11 +48,21 @@ class Config:
     # LLM settings
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
-    # Parser-specific URLs
-    VGTimes_URLS: list[str] = os.getenv("VGTimes_URLS", "https://vgtimes.ru/free/").split(",")
-    Pikabu_URLS: list[str] = os.getenv("Pikabu_URLS", "https://pikabu.ru/community/steam").split(",")
+    # Parsers configuration
+    PARSERS_CONFIG: dict = {}
+
+    @classmethod
+    def _load_parsers_config(cls):
+        """Loads parser configurations from a YAML file."""
+        config_path = cls.BASE_DIR / "parsers.yml"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                cls.PARSERS_CONFIG = yaml.safe_load(f)
 
     @classmethod
     def validate(cls) -> bool:
         """Проверяет наличие обязательных параметров конфигурации."""
         return bool(cls.TELEGRAM_BOT_TOKEN and cls.TELEGRAM_CHANNEL_ID)
+
+# Load the parsers config
+Config._load_parsers_config()

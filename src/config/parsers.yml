@@ -1,0 +1,82 @@
+pikabu:
+  request_timeout: 30
+  max_text_length: 4000
+  valid_image_extensions: [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+  rate_limit_delay: 2
+  target_urls: "https://pikabu.ru/community/steam"
+  selectors:
+    articles: "article[data-story-id]"
+    title: "h2.story__title a.story__title-link"
+    link: "a.story__title-link"
+    content: "div.story__content"
+    rating: "div.story__rating-count"
+    images:
+      - "div.story-block_type_image img.story-image__image"
+      - "div.story__image img"
+      - "img.story__image"
+      - "div.story__content img"
+      - "div.story-block img"
+      - "img[src*='story-image']"
+      - "img[src*='story__image']"
+      - "img[src*='story-block']"
+      - "img[data-src]"
+    author: "a.story__user-link"
+    date: "time.story__datetime"
+    tags: "a.story__tag"
+    store_links: "a[href]"
+  stores:
+    steam:
+      domain: "store.steampowered.com"
+      validation_regex: "/app/\\d+/"
+    epicgames:
+      domain: "epicgames.com"
+      validation_regex: "/p/[^/]+$"
+    itch:
+      domain: "itch.io"
+    gog:
+      domain: "gog.com"
+      validation_regex: "/game/[^/]+$"
+
+vgtimes:
+  request_timeout: 30
+  max_text_length: 4000
+  valid_image_extensions: [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+  rate_limit_delay: 2
+  target_urls: "https://vgtimes.ru/free/"
+  selectors:
+    articles: "ul.list-items > li"
+    title: "div.item-name.type0 a:first-child"
+    link: "div.item-name.type0 a:first-child"
+    image: "div.image_wrap.type0 img"
+    rating: "div.rrating div.text"
+    store_links: 'a.l_ks[target="_blank"]'
+    content: "div.article_text"
+    date: "div.date"
+  stores:
+    steam:
+      domain: "store.steampowered.com"
+    epicgames:
+      domain: "epicgames.com"
+    gog:
+      domain: "gog.com"
+
+stopgame:
+  request_timeout: 30
+  max_text_length: 4000
+  valid_image_extensions: [".jpg", ".jpeg", ".png", ".gif", ".webp"]
+  rate_limit_delay: 2
+  target_urls: "https://stopgame.ru/news"
+  selectors:
+    articles: ".article-item"
+    title: ".article-title a"
+    link: ".article-title a"
+    image: ".image-wrapper img"
+    content: ".article-content"
+    date: ".article-info .timestamp"
+  stores:
+    steam:
+      domain: "store.steampowered.com"
+    epicgames:
+      domain: "epicgames.com"
+    gog:
+      domain: "gog.com"

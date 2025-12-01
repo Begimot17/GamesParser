@@ -3,7 +3,7 @@
 import asyncio
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, AsyncIterator, Tuple, Dict, Any
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -21,247 +21,220 @@ from src.storage.storage import JsonStorage
 class PikabuParser(BaseParser):
     """Парсер для получения постов из сообщества Steam на Pikabu."""
 
-    REQUEST_TIMEOUT: int = Config.REQUEST_TIMEOUT
-    MAX_TEXT_LENGTH: int = Config.MAX_TEXT_LENGTH
-    VALID_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
-    RATE_LIMIT_DELAY: int = 2
-    TARGET_URLS = Config.Pikabu_URLS
-    SELECTORS = {
-        "articles": "article[data-story-id]",
-        "title": "h2.story__title a.story__title-link",
-        "link": "a.story__title-link",
-        "content": "div.story__content",
-        "rating": "div.story__rating-count",
-        "images": [
-            "div.story-block_type_image img.story-image__image",
-            "div.story__image img",
-            "img.story__image",
-            "div.story__content img",
-            "div.story-block img",
-            "img[src*='story-image']",
-            "img[src*='story__image']",
-            "img[src*='story-block']",
-            "img[data-src]",
-        ],
-        "author": "a.story__user-link",
-        "date": "time.story__datetime",
-        "tags": "a.story__tag",
-        "store_links": "a[href]",
-    }
-
     def __init__(self):
-        super().__init__()
+        parser_config = Config.PARSERS_CONFIG.get("pikabu", {})
+        self.TARGET_URLS = parser_config.get("target_urls", "").split(',')
+        super().__init__(default_base_url=self.TARGET_URLS[0])
+        
+        self.REQUEST_TIMEOUT: int = parser_config.get("request_timeout", Config.REQUEST_TIMEOUT)
+        self.MAX_TEXT_LENGTH: int = parser_config.get("max_text_length", Config.MAX_TEXT_LENGTH)
+        self.VALID_IMAGE_EXTENSIONS = tuple(parser_config.get("valid_image_extensions", []))
+        self.RATE_LIMIT_DELAY: int = parser_config.get("rate_limit_delay", 2)
+        self.SELECTORS = parser_config.get("selectors", {})
+        self.STORE_CONFIG = parser_config.get("stores", {})
+
         self.llm = LLMG4F()
         self.storage = JsonStorage(Config.DB_PATH)
 
-    async def __aenter__(self) -> "PikabuParser":
-        """Вход в асинхронный контекстный менеджер."""
-        self.session = aiohttp.ClientSession(headers=self.headers)
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Выход из асинхронного контекстного менеджера."""
-        if self.session:
-            await self.session.close()
-
-    def _clean_store_url(self, url: str) -> str:
+    def _clean_store_url(self, url: str, store_name: str) -> str:
         """Очистка и проверка URL магазина."""
         if not url:
             return ""
+        
+        store_info = self.STORE_CONFIG.get(store_name, {})
+        domain = store_info.get("domain")
+        validation_regex = store_info.get("validation_regex")
+
+        if not domain or domain not in url:
+            return ""
+
         url = self._normalize_url(url)
         url = url.split("?")[0].split("#")[0]
-        if "store.steampowered.com" in url and not re.search(r"/app/\d+/", url):
+
+        if validation_regex and not re.search(validation_regex, url):
             return ""
-        if "epicgames.com" in url and not re.search(r"/p/[^/]+$", url):
+        
+        # Special case for itch.io
+        if store_name == "itch" and (url.rstrip("/").count("/") < 3 or url.endswith("/itch.io")):
             return ""
-        if "itch.io" in url and (url.rstrip("/").count("/") < 3 or url.endswith("/itch.io")):
-            return ""
-        if "gog.com" in url and not re.search(r"/game/[^/]+$", url):
-            return ""
-        if not any(
-            store in url
-            for store in [
-                "store.steampowered.com",
-                "epicgames.com",
-                "itch.io",
-                "gog.com",
-            ]
-        ):
-            return ""
+
         return url
 
     def _extract_store_links(self, text: str) -> dict:
         """Извлечение ссылок на магазины из текста."""
         stores: dict = {}
-        for store_name, pattern in self.store_patterns.items():
-            store_links = re.findall(rf"\[{store_name}\]\((https?://[^)]+)\)", text, re.IGNORECASE)
-            if store_links:
-                cleaned_url = self._clean_store_url(store_links[0])
+        for store_name, store_info in self.STORE_CONFIG.items():
+            domain = store_info.get("domain")
+            if not domain:
+                continue
+            
+            # Find all potential links for this domain
+            escaped_domain = domain.replace('.', r'\.')
+            pattern = rf"https?://(?:www\.)?{escaped_domain}[^\"'\s,\]\)]*"
+            found_urls = re.findall(pattern, text, re.IGNORECASE)
+            
+            for url in found_urls:
+                cleaned_url = self._clean_store_url(url, store_name)
                 if cleaned_url:
                     stores[store_name] = cleaned_url
-                continue
-            store_links = re.findall(rf'https?://[^"\s]+{pattern.pattern}[^"\s]*', text)
-            if store_links:
-                cleaned_url = self._clean_store_url(store_links[0])
-                if cleaned_url and "/accounts/" not in cleaned_url:
-                    stores[store_name] = cleaned_url
+                    break # Found a valid link for this store, move to the next
         return stores
 
-    async def fetch_posts(self) -> list:
-        """Получение и обработка постов."""
-        logger.info("[PikabuParser] Starting fetch_posts...")
-        all_posts = []
-        for target_url in self.TARGET_URLS:
-            try:
-                await self._rate_limit()
-                logger.info(f"[PikabuParser] Fetching page: {target_url}")
-                response = await self._fetch_page(target_url)
-                logger.info(f"[PikabuParser] Got response, length: {len(response)}")
-                posts = await self._process_page(response)
-                logger.info(f"[PikabuParser] Parsed {len(posts)} posts from page")
-                all_posts.extend(posts)
-            except Exception as e:
-                logger.error(f"[PikabuParser] Unexpected error in Pikabu parser: {e}", exc_info=True)
-        return all_posts
-
-    async def _fetch_page(self, url: str) -> str:
-        """Выполнение HTTP запроса с повторными попытками."""
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                if not self.session:
-                    self.session = aiohttp.ClientSession(headers=self.headers)
-                async with self.session.get(url, timeout=self.REQUEST_TIMEOUT) as response:
-                    response.raise_for_status()
-                    return await response.text()
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    raise
-                logger.warning(f"Попытка {attempt + 1} не удалась: {e}")
-                await asyncio.sleep(2**attempt)
-
-    async def _process_page(self, html: str) -> list:
-        """Обработка HTML страницы."""
+    async def _process_url(self, target_url: str) -> AsyncIterator[Post]:
+        """Processes a single URL and yields posts."""
+        html = ""
         try:
+            await self._rate_limit()
+            logger.info(f"[PikabuParser] Processing page: {target_url}")
+            html = await self._fetch_page(target_url)
+            logger.info(f"[PikabuParser] Got response, length: {len(html)}")
+
             soup = BeautifulSoup(html, "html.parser")
-            posts: list = []
-            for article in soup.select(self.SELECTORS["articles"]):
+            articles = soup.select(self.SELECTORS["articles"])
+            logger.info(f"[PikabuParser] Found {len(articles)} articles on page")
+
+            for article in articles:
                 try:
-                    # Early check - extract post ID first
                     post_id = article.get("data-story-id")
                     if not post_id:
                         continue
 
-                    # Skip if already processed (early check before LLM)
                     if self.storage.is_processed(post_id):
                         logger.info(f"[PikabuParser] Post {post_id} already processed, skipping")
                         continue
 
-                    # Now do full parsing since it's new
-                    post = await self._parse_article(article)
+                    post = await self._parse_article(article, preloaded_html=html) # Pass full HTML here
                     if post:
-                        posts.append(post)
+                        logger.info(f"[PikabuParser] Yielding post {post.id}")
+                        yield post
                 except Exception as e:
-                    logger.error(f"Ошибка при парсинге статьи Pikabu: {e}", exc_info=True)
-            return posts
+                    logger.error(f"[PikabuParser] Error processing individual article: {e}", exc_info=True)
         except Exception as e:
-            logger.error(f"Ошибка при обработке страницы Pikabu: {e}", exc_info=True)
-            return []
+            logger.error(f"[PikabuParser] Unexpected error in _process_url for {target_url}: {e}", exc_info=True)
+            if html:
+                self._save_html_on_error(html, target_url)
+
+    async def fetch_posts(self) -> list[Post]:
+        """Получение и обработка постов."""
+        logger.info("[PikabuParser] Starting fetch_posts...")
+        all_posts = []
+        for target_url in self.TARGET_URLS:
+            async for post in self._process_url(target_url):
+                all_posts.append(post)
+        logger.info(f"[PikabuParser] fetch_posts completed. Total posts: {len(all_posts)}")
+        return all_posts
+
+    async def stream_posts(self) -> AsyncIterator[Post]:
+        """Генератор для потокового получения постов по мере их парсинга."""
+        logger.info("[PikabuParser] Starting stream_posts...")
+        for target_url in self.TARGET_URLS:
+            async for post in self._process_url(target_url):
+                yield post
+        logger.info("[PikabuParser] stream_posts completed")
 
     def _clean_text(self, text: str) -> str:
         """Очистка текста от лишних символов."""
-        if not text:
-            return ""
-        text = text.strip()
+        text = super()._clean_text(text)  # Call base class's clean_text first
         if len(text) > self.MAX_TEXT_LENGTH:
             return text[: self.MAX_TEXT_LENGTH] + "..."
         return text
 
-    def _normalize_url(self, url: str, base_url: str = None) -> str:
-        """Нормализация URL."""
-        if not url:
-            return ""
-        try:
-            if url.startswith("//"):
-                url = f"https:{url}"
-            elif url.startswith("/"):
-                base_url = base_url or self.TARGET_URLS[0]
-                url = urljoin(base_url, url)
-            elif not urlparse(url).scheme:
-                url = f"https://{url}"
-            return url
-        except Exception as e:
-            logger.error(f"Ошибка при нормализации URL {url}: {e}")
-            return ""
+    async def _update_post_with_llm_data(self, title: str, content: str, images: list, link: str, store_links: dict, preloaded_html: Optional[str] = None) -> tuple[str, str, list, dict]:
+        """Updates post data with information extracted by LLM."""
+        page_text = await self._fetch_full_page_text(link, preloaded_html=preloaded_html)
+        if page_text:
+            llm_data = await self.llm.extract_article_info(page_text, link)
 
-    async def _parse_article(self, article: Tag) -> Optional[Post]:
+            if llm_data.get("title"):
+                title = llm_data["title"]
+            if llm_data.get("content"):
+                content = llm_data["content"]
+            if llm_data.get("store_links"):
+                store_links = {k: v for k, v in llm_data["store_links"].items() if v and v.strip()}
+            if llm_data.get("images"):
+                images.extend(llm_data["images"])
+        
+        if not store_links:
+            store_links = self._extract_store_links(content)
+            
+        return title, content, images, store_links
+
+    def _parse_initial_post_data(self, article: Tag) -> Optional[Dict[str, Any]]:
+        """Parses the initial post data from the article tag."""
+        post_id = article.get("data-story-id")
+        if not post_id:
+            logger.warning("No post ID found in Pikabu article")
+            return None
+
+        title_element = article.select_one(self.SELECTORS["title"])
+        if not title_element:
+            logger.warning(f"No title found for Pikabu post {post_id}")
+            return None
+        title = self._clean_text(title_element.text)
+        if not title:
+            logger.warning(f"Empty title for Pikabu post {post_id}")
+            return None
+
+        link = self._normalize_url(title_element.get("href", ""))
+        if not link:
+            logger.warning(f"No link found for Pikabu post {post_id}")
+            return None
+
+        rating_element = article.select_one(self.SELECTORS["rating"])
+        rating = self._clean_text(rating_element.text) if rating_element else "0"
+
+        date = None
+        date_element = article.select_one(self.SELECTORS["date"])
+        if date_element:
+            date_str = date_element.get("datetime")
+            if date_str:
+                try:
+                    date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                except ValueError:
+                    logger.warning(f"Invalid date format for Pikabu post {post_id}: {date_str}")
+
+        content_element = article.select_one(self.SELECTORS["content"])
+        content = self._clean_text(content_element.text) if content_element else ""
+
+        images: list = []
+        for selector in self.SELECTORS.get("images", []):
+            for img in article.select(selector):
+                src = img.get("src") or img.get("data-src")
+                if src:
+                    src = self._normalize_url(src)
+                    if src and src.endswith(self.VALID_IMAGE_EXTENSIONS):
+                        if "/avatars/" in src:
+                            continue
+                        images.append(src)
+        
+        return {
+            "id": post_id,
+            "title": title,
+            "link": link,
+            "rating": rating,
+            "date": date,
+            "content": content,
+            "images": images,
+        }
+
+    async def _parse_article(self, article: Tag, preloaded_html: Optional[str] = None) -> Optional[Post]:
         """Парсинг статьи с главной страницы Pikabu."""
+        initial_data = self._parse_initial_post_data(article)
+        if not initial_data:
+            return None
+
+        post_id = initial_data["id"]
         try:
-            post_id = article.get("data-story-id")
-            if not post_id:
-                logger.warning("No post ID found in Pikabu article")
-                return None
-            title_element = article.select_one(self.SELECTORS["title"])
-            if not title_element:
-                logger.warning(f"No title found for Pikabu post {post_id}")
-                return None
-            title = self._clean_text(title_element.text)
-            if not title:
-                logger.warning(f"Empty title for Pikabu post {post_id}")
-                return None
-            link = self._normalize_url(title_element.get("href", ""))
-            if not link:
-                logger.warning(f"No link found for Pikabu post {post_id}")
-                return None
-            rating_element = article.select_one(self.SELECTORS["rating"])
-            rating = self._clean_text(rating_element.text) if rating_element else "0"
-            date = None
-            date_element = article.select_one(self.SELECTORS["date"])
-            if date_element:
-                date_str = date_element.get("datetime")
-                if date_str:
-                    try:
-                        date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                    except ValueError:
-                        logger.warning(f"Invalid date format for Pikabu post {post_id}: {date_str}")
-            content_element = article.select_one(self.SELECTORS["content"])
-            content = self._clean_text(content_element.text) if content_element else ""
-            images: list = []
-            for selector in self.SELECTORS["images"]:
-                for img in article.select(selector):
-                    src = img.get("src") or img.get("data-src")
-                    if src:
-                        src = self._normalize_url(src)
-                        if src and any(src.endswith(ext) for ext in self.VALID_IMAGE_EXTENSIONS):
-                            if "/avatars/" in src:
-                                continue
-                            images.append(src)
+            # Update with LLM extracted data
+            title, content, images, store_links = await self._update_post_with_llm_data(
+                initial_data["title"], initial_data["content"], initial_data["images"], initial_data["link"], {}, preloaded_html
+            )
 
-            # Get full page text and process with LLM
-            page_text = await self._fetch_full_page_text(link)
-            if page_text:
-                llm_data = await self.llm.extract_article_info(page_text, link)
-
-                # Update with LLM extracted data
-                if llm_data.get("title"):
-                    title = llm_data["title"]
-                if llm_data.get("content"):
-                    content = llm_data["content"]
-                if llm_data.get("store_links"):
-                    # Only include store links that actually have URLs
-                    store_links = {k: v for k, v in llm_data["store_links"].items() if v and v.strip()}
-                else:
-                    store_links = self._extract_store_links(content)
-                if llm_data.get("images"):
-                    images.extend(llm_data["images"])
-            else:
-                store_links = self._extract_store_links(content)
-
-            metadata = PostMetadata(rating=rating, store_links=store_links, images=images, date=date)
+            metadata = PostMetadata(rating=initial_data["rating"], store_links=store_links, images=list(set(images)), date=initial_data["date"])
             return Post(
                 id=post_id,
                 title=title,
-                link=link,
+                link=initial_data["link"],
                 content=content,
                 metadata=metadata,
             )
@@ -269,86 +242,35 @@ class PikabuParser(BaseParser):
             logger.error(f"Validation error for post {post_id}: {e}")
             return None
         except Exception as e:
-            logger.error(f"Ошибка при парсинге статьи Pikabu: {e}", exc_info=True)
+            logger.error(f"Ошибка при парсинге статьи Pikabu {post_id}: {e}", exc_info=True)
             return None
 
-    async def stream_posts(self):
-        """Генератор для потокового получения постов по мере их парсинга."""
-        logger.info("[PikabuParser] Starting stream_posts...")
-        for target_url in self.TARGET_URLS:
-            try:
-                await self._rate_limit()
-                logger.info(f"[PikabuParser] Streaming from page: {target_url}")
-                response = await self._fetch_page(target_url)
-                logger.info(f"[PikabuParser] Got response, length: {len(response)}")
-
-                # Parse page
-                soup = BeautifulSoup(response, "html.parser")
-                articles = soup.select(self.SELECTORS["articles"])
-                logger.info(f"[PikabuParser] Found {len(articles)} articles on page")
-
-                # Process each article individually with early DB check
-                for article in articles:
-                    try:
-                        # Early check - extract post ID first
-                        post_id = article.get("data-story-id")
-                        if not post_id:
-                            continue
-
-                        # Skip if already processed (early check before LLM)
-                        if self.storage.is_processed(post_id):
-                            logger.info(f"[PikabuParser] Post {post_id} already processed, skipping early")
-                            continue
-
-                        # Now do full parsing since it's new
-                        post = await self._parse_article(article)
-                        if post:
-                            logger.info(f"[PikabuParser] Yielding post {post.id}")
-                            yield post
-                    except Exception as e:
-                        logger.error(f"[PikabuParser] Error processing individual article: {e}", exc_info=True)
-                        continue
-
-            except Exception as e:
-                logger.error(f"[PikabuParser] Unexpected error in stream_posts: {e}", exc_info=True)
-
-        logger.info("[PikabuParser] stream_posts completed")
-
-    async def _fetch_full_page_text(self, post_link: str) -> str:
+    async def _fetch_full_page_text(self, post_link: str, preloaded_html: Optional[str] = None) -> str:
         """Fetch the full page text for LLM processing."""
         try:
             logger.info(f"Fetching full page text from {post_link}")
 
-            if not self.session:
-                self.session = aiohttp.ClientSession(headers=self.headers)
+            if preloaded_html:
+                html = preloaded_html
+            else:
+                html = await self._fetch_page(post_link)
+            
+            if not html:
+                return ""
 
-            async with self.session.get(post_link, timeout=self.REQUEST_TIMEOUT) as response:
-                if response.status != 200:
-                    logger.warning(f"Failed to fetch page text, status: {response.status}")
-                    return ""
+            soup = BeautifulSoup(html, "html.parser")
 
-                html = await response.text()
-                soup = BeautifulSoup(html, "html.parser")
+            # Remove script and style elements
+            for element in soup(["script", "style", "nav", "header", "footer", "aside", ".sidebar"]):
+                element.decompose()
 
-                # Remove script and style elements
-                for script in soup(["script", "style", "nav", "header", "footer", "aside", ".sidebar"]):
-                    script.decompose()
+            # Get text from the main content area
+            main_content = soup.select_one("article, .story, .post-content, main")
+            text = main_content.get_text(separator=' ', strip=True) if main_content else soup.get_text(separator=' ', strip=True)
 
-                # Get text from the main content area
-                main_content = soup.select_one("article, .story, .post-content, main")
-                if main_content:
-                    text = main_content.get_text()
-                else:
-                    text = soup.get_text()
-
-                # Clean up the text
-                lines = (line.strip() for line in text.splitlines())
-                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                text = " ".join(chunk for chunk in chunks if chunk)
-
-                logger.info(f"Extracted {len(text)} characters of text")
-                return text[:10000]  # Limit text length for LLM
+            logger.info(f"Extracted {len(text)} characters of text")
+            return text[:10000]  # Limit text length for LLM
 
         except Exception as e:
-            logger.error(f"Error fetching page text: {e}", exc_info=True)
+            logger.error(f"Error fetching page text for {post_link}: {e}", exc_info=True)
             return ""

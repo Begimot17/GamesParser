@@ -1,9 +1,13 @@
 import asyncio
+import os
 import re
 from abc import ABC, abstractmethod
+from typing import Optional
+from urllib.parse import quote, urlparse, urljoin
 
 import aiohttp
 
+from src.common.logger import logger
 from src.config.config import Config
 
 
@@ -11,16 +15,11 @@ class BaseParser(ABC):
     REQUEST_TIMEOUT: int = Config.REQUEST_TIMEOUT
     RATE_LIMIT_DELAY: int = 2
 
-    def __init__(self):
+    def __init__(self, default_base_url: Optional[str] = None):
         self.headers = {"User-Agent": Config.USER_AGENT}
-        self.store_patterns = {
-            "Steam": re.compile(r"store\.steampowered\.com"),
-            "Epic Games": re.compile(r"epicgames\.com"),
-            "GOG": re.compile(r"gog\.com"),
-            "itch.io": re.compile(r"itch\.io"),
-        }
         self.last_request_time = 0
         self.session = None
+        self.default_base_url = default_base_url
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(headers=self.headers)
@@ -45,6 +44,66 @@ class BaseParser(ABC):
         text = re.sub(r"<style.*?</style>", "", text, flags=re.DOTALL)
         text = text.strip()
         return text
+
+    def _normalize_url(self, url: str, base_url: Optional[str] = None) -> str:
+        """Нормализация URL."""
+        if not url:
+            return ""
+        
+        # Use instance's default_base_url if base_url is not provided
+        effective_base_url = base_url if base_url is not None else self.default_base_url
+
+        try:
+            if url.startswith("//"):
+                url = f"https:{url}"
+            elif url.startswith("/"):
+                if not effective_base_url:
+                    logger.warning(f"Relative URL '{url}' provided without a base_url or default_base_url for normalization.")
+                    return ""
+                url = urljoin(effective_base_url, url)
+            elif not urlparse(url).scheme:
+                url = f"https://{url}"
+            return url
+        except Exception as e:
+            logger.error(f"Ошибка при нормализации URL {url}: {e}")
+            return ""
+
+    def _save_html_on_error(self, html: str, url: str) -> None:
+        """Saves the HTML content to a file on parsing error."""
+        if not Config.SAVE_HTML:
+            return
+
+        if not os.path.exists(Config.HTML_DIR):
+            os.makedirs(Config.HTML_DIR)
+        
+        # Sanitize the URL to create a valid filename
+        filename = f"{quote(url, safe='')}.html"
+        filepath = os.path.join(Config.HTML_DIR, filename)
+        
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(html)
+            logger.info(f"Saved HTML for {url} to {filepath}")
+        except IOError as e:
+            logger.error(f"Error saving HTML for {url}: {e}")
+
+    async def _fetch_page(self, url: str) -> str:
+        """Выполнение HTTP запроса с повторными попытками."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if not self.session or self.session.closed:
+                    self.session = aiohttp.ClientSession(headers=self.headers)
+                async with self.session.get(url, timeout=self.REQUEST_TIMEOUT) as response:
+                    response.raise_for_status()
+                    return await response.text()
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to fetch {url} after {max_retries} attempts: {e}", exc_info=True)
+                    raise
+                logger.warning(f"Attempt {attempt + 1} to fetch {url} failed: {e}. Retrying...")
+                await asyncio.sleep(2**attempt)
+        return ""
 
     @abstractmethod
     async def fetch_posts(self) -> list:

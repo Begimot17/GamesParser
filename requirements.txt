@@ -9,3 +9,4 @@ requests>=2.31.0
 lxml>=4.9.3
 pydantic>=2.5.0
 python-dotenv>=1.0.0
+PyYAML>=6.0

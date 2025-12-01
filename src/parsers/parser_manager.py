@@ -3,6 +3,7 @@
 from src.common.logger import logger
 from src.parsers.pikabu_parser import PikabuParser
 from src.parsers.vgtimes_parser import VGTimesParser
+from src.parsers.stopgame_parser import StopGameParser
 
 
 class ParserManager:
@@ -11,7 +12,7 @@ class ParserManager:
     def __init__(self):
         """Инициализация ParserManager."""
         logger.info("[ParserManager] Initializing parser manager...")
-        self.parsers = [VGTimesParser(), PikabuParser()]
+        self.parsers = [VGTimesParser(), PikabuParser(), StopGameParser()]
         logger.info(f"[ParserManager] Parsers initialized: {[type(p).__name__ for p in self.parsers]}")
 
     async def fetch_all_posts(self) -> list:

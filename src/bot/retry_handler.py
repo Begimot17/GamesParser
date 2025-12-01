@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from telegram.error import NetworkError, RetryAfter, TimedOut
 
-from src.common import logger
+from src.common.logger import logger
 
 
 class RetryHandler:

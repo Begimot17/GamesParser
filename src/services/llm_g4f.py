@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 from g4f.client import AsyncClient
 
-from src.common import logger
+from src.common.logger import logger
 from src.config.config import Config
 from src.services.llm_interface import LLMInterface
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import aiofiles
 
-from src.common import logger
+from src.common.logger import logger
 from src.config.config import Config
 
 

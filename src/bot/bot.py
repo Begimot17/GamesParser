@@ -101,7 +101,9 @@ class TelegramNewsBot:
             return await self._send_large_media_group(media_group)
         else:
             result = await self.retry_handler.run_with_retry(
-                self.bot.send_media_group, chat_id=self.channel_id, media=media_group,
+                self.bot.send_media_group,
+                chat_id=self.channel_id,
+                media=media_group,
             )
             return bool(result)
 
@@ -136,7 +138,9 @@ class TelegramNewsBot:
                     media.caption = None
 
             result = await self.retry_handler.run_with_retry(
-                self.bot.send_media_group, chat_id=self.channel_id, media=group_slice,
+                self.bot.send_media_group,
+                chat_id=self.channel_id,
+                media=group_slice,
             )
             if not result:
                 return False

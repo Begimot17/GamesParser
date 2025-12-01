@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from src.common import logger
+from src.common.logger import logger
 
 
 class JsonStorage:

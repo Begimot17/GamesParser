@@ -8,7 +8,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
-from src.common import logger
+from src.common.logger import logger
 from src.config.config import Config
 from src.models.models import Post, PostMetadata
 from src.parsers.utils.base_parser import BaseParser

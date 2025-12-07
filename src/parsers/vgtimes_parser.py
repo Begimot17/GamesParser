@@ -11,40 +11,34 @@ from bs4 import BeautifulSoup, Tag
 from pydantic import ValidationError
 
 from src.common.logger import logger
-from src.config.config import Config
+from src.config.config import settings
 from src.models.models import Post, PostMetadata
 from src.parsers.utils.base_parser import BaseParser
 from src.services.llm_g4f import LLMG4F
-from src.storage.storage import JsonStorage
+from src.storage.sqlite_storage import SQLiteStorage
 
 
 class VGTimesParser(BaseParser):
     """Парсер для получения постов с VGTimes."""
 
     def __init__(self):
-        super().__init__()
-        parser_config = Config.PARSERS_CONFIG.get("vgtimes", {})
+        self.config = settings.PARSERS_CONFIG.get("vgtimes", {})
+        self.TARGET_URLS = self.config.get("target_urls", "").split(',') if isinstance(self.config.get("target_urls"), str) else self.config.get("target_urls", [])
+        if not self.config:
+            logger.warning("VGTimes configuration not found in settings! Using defaults.")
+            self.TARGET_URLS = ["https://vgtimes.ru/free/"]
 
-        self.REQUEST_TIMEOUT: int = parser_config.get("request_timeout", Config.REQUEST_TIMEOUT)
-        self.MAX_TEXT_LENGTH: int = parser_config.get("max_text_length", Config.MAX_TEXT_LENGTH)
-        self.VALID_IMAGE_EXTENSIONS = tuple(parser_config.get("valid_image_extensions", []))
-        self.RATE_LIMIT_DELAY: int = parser_config.get("rate_limit_delay", 2)
-        self.TARGET_URLS = parser_config.get("target_urls", "").split(',')
-        self.SELECTORS = parser_config.get("selectors", {})
-        self.STORE_CONFIG = parser_config.get("stores", {})
+        super().__init__(default_base_url=self.TARGET_URLS[0] if self.TARGET_URLS else None)
 
-        self.storage = JsonStorage(Config.DB_PATH)
-        self.llm = LLMG4F()
+        self.REQUEST_TIMEOUT = self.config.get("request_timeout", settings.REQUEST_TIMEOUT)
+        self.MAX_TEXT_LENGTH = self.config.get("max_text_length", settings.MAX_TEXT_LENGTH)
+        self.VALID_IMAGE_EXTENSIONS = tuple(self.config.get("valid_image_extensions", [".jpg", ".jpeg", ".png", ".gif", ".webp"]))
+        self.RATE_LIMIT_DELAY = self.config.get("rate_limit_delay", 2)
+        self.SELECTORS = self.config.get("selectors", {})
+        self.STORE_CONFIG = self.config.get("stores", {})
 
-    async def __aenter__(self) -> "VGTimesParser":
-        """Вход в асинхронный контекстный менеджер."""
-        self.session = aiohttp.ClientSession(headers=self.headers)
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Выход из асинхронного контекстного менеджера."""
-        if self.session:
-            await self.session.close()
+        self.storage = SQLiteStorage(settings.DB_PATH)
+        self.llm = LLMG4F(model_name=settings.LLM_MODEL)
 
     async def _process_url(self, target_url: str) -> AsyncIterator[Post]:
         """Processes a single URL and yields posts."""
@@ -62,7 +56,11 @@ class VGTimesParser(BaseParser):
             for article in articles:
                 try:
                     post = await self._parse_article(article)
-                    if post and not self.storage.is_processed(post.id):
+                    if post:
+                        if await self.storage.is_processed(post.id):
+                            logger.debug(f"[VGTimesParser] Post {post.id} already processed, skipping")
+                            continue
+                            
                         logger.info(f"[VGTimesParser] Yielding post {post.id}")
                         yield post
                 except Exception as e:
@@ -91,24 +89,6 @@ class VGTimesParser(BaseParser):
             async for post in self._process_url(target_url):
                 yield post
         logger.info("[VGTimesParser] stream_posts completed")
-
-    async def _fetch_page(self, url: str) -> str:
-        """Выполнение HTTP запроса с повторными попытками."""
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                if not self.session or self.session.closed:
-                    self.session = aiohttp.ClientSession(headers=self.headers)
-                async with self.session.get(url, timeout=self.REQUEST_TIMEOUT) as response:
-                    response.raise_for_status()
-                    return await response.text()
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    logger.error(f"Failed to fetch {url} after {max_retries} attempts: {e}", exc_info=True)
-                    raise
-                logger.warning(f"Attempt {attempt + 1} to fetch {url} failed: {e}. Retrying...")
-                await asyncio.sleep(2**attempt)
-        return ""
 
     def _extract_id(self, url: str) -> Optional[str]:
         """Extract article ID from URL."""
@@ -155,9 +135,16 @@ class VGTimesParser(BaseParser):
 
         if "/go/" in url:
             try:
+                # Need session here. BaseParser has self.session if inside context,
+                # but fetch_posts manages session context implicitly via _fetch_page? 
+                # No, _fetch_page creates session if missing.
+                # But here we need to make a HEAD request.
+                if not self.session or self.session.closed:
+                    self.session = aiohttp.ClientSession(headers=self.headers)
+                    
                 async with self.session.head(url, allow_redirects=True, timeout=self.REQUEST_TIMEOUT) as response:
                     url = str(response.url)
-                    logger.info(f"Redirected URL: {url}")
+                    logger.debug(f"Redirected URL: {url}")
             except Exception as e:
                 logger.error(f"Could not resolve redirect for {url}: {e}")
                 return ""
@@ -180,7 +167,7 @@ class VGTimesParser(BaseParser):
     async def _extract_store_links(self, article_html: Tag) -> dict:
         """Extract store links from article."""
         stores: dict = {}
-        link_elements = article_html.select(self.SELECTORS["store_links"])
+        link_elements = article_html.select(self.SELECTORS.get("store_links", ""))
         for link in link_elements:
             href = link.get("href", "")
             for store_name, store_info in self.STORE_CONFIG.items():
@@ -190,7 +177,6 @@ class VGTimesParser(BaseParser):
                     if cleaned_url:
                         stores[store_name] = cleaned_url
                         break
-        logger.info(f"[VGTimesParser] Extracted store links: {stores}")
         return stores
 
     async def _parse_article(self, article_html: Tag) -> Optional[Post]:
@@ -221,8 +207,8 @@ class VGTimesParser(BaseParser):
         image_elem = article_html.select_one(self.SELECTORS["image"])
         image_url = image_elem.get("data-src") if image_elem else None
         if not image_url:
-            logger.info(f"[VGTimesParser] No image URL found for article {article_id}")
-
+            image_url = image_elem.get("src") if image_elem else None
+            
         rating_elem = article_html.select_one(self.SELECTORS["rating"])
         rating = rating_elem.get_text(strip=True) if rating_elem else None
 
@@ -237,20 +223,21 @@ class VGTimesParser(BaseParser):
             date_elem = soup.select_one(self.SELECTORS["date"])
             raw_date_text = date_elem.get_text(strip=True) if date_elem else ""
             date = self._parse_date(raw_date_text) if raw_date_text else None
-            if not date:
-                logger.warning(f"[VGTimesParser] Could not parse date for article {article_id} from its page.")
 
-            images = [image_url] if image_url else []
-            store_links = await self._extract_store_links(article_html) # Links from list page are usually enough
+            store_links = await self._extract_store_links(article_html) # Links are usually on list page too
 
-            # Optionally, you can re-run LLM or other extractions on the full page content
-            # For now, we'll use the extracted content directly.
+            # Clean content using BaseParser method if available or implement one
+            content = self._clean_text(content)
+            
+            # Truncate content
+            if len(content) > self.MAX_TEXT_LENGTH:
+                content = content[:self.MAX_TEXT_LENGTH] + "..."
 
             metadata = PostMetadata(
                 rating=rating,
                 store_links=store_links,
-                images=list(set(images)),
-                date=date,
+                images=[self._normalize_url(image_url)] if image_url else [],
+                date=date
             )
 
             return Post(
@@ -258,11 +245,9 @@ class VGTimesParser(BaseParser):
                 title=title,
                 link=link,
                 content=content,
-                metadata=metadata,
+                metadata=metadata
             )
-        except ValidationError as e:
-            logger.error(f"Validation error for article {link}: {e}")
-            return None
+
         except Exception as e:
-            logger.error(f"Error parsing full article page {link}: {e}", exc_info=True)
+            logger.error(f"[VGTimesParser] Error parsing article {article_id}: {e}", exc_info=True)
             return None

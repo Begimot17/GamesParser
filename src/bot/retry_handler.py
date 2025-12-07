@@ -80,3 +80,31 @@ class RetryHandler:
         delay += jitter
         delay = max(self.min_delay, min(delay, self.max_delay))
         return delay
+
+
+def retry(
+    max_retries: int = 5,
+    base_delay: float = 1.0,
+    backoff_factor: float = 2.0,
+    jitter_range: float = 0.5,
+    min_delay: float = 1.0,
+    max_delay: float = 60.0,
+) -> Callable:
+    """Decorator to apply retry logic to an async function."""
+    config = {
+        "max_retries": max_retries,
+        "base_delay": base_delay,
+        "backoff_factor": backoff_factor,
+        "jitter_range": jitter_range,
+        "min_delay": min_delay,
+        "max_delay": max_delay,
+    }
+    handler = RetryHandler(config)
+
+    def decorator(func: Callable) -> Callable:
+        async def wrapper(*args, **kwargs) -> Any:
+            return await handler.run_with_retry(func, *args, **kwargs)
+
+        return wrapper
+
+    return decorator

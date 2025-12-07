@@ -11,30 +11,33 @@ from bs4 import BeautifulSoup, Tag
 from pydantic import ValidationError
 
 from src.common.logger import logger
-from src.config.config import Config
+from src.config.config import settings
 from src.models.models import Post, PostMetadata
 from src.parsers.utils.base_parser import BaseParser
 from src.services.llm_g4f import LLMG4F
-from src.storage.storage import JsonStorage
-
+from src.storage.sqlite_storage import SQLiteStorage
 
 class PikabuParser(BaseParser):
     """Парсер для получения постов из сообщества Steam на Pikabu."""
 
     def __init__(self):
-        parser_config = Config.PARSERS_CONFIG.get("pikabu", {})
-        self.TARGET_URLS = parser_config.get("target_urls", "").split(',')
-        super().__init__(default_base_url=self.TARGET_URLS[0])
+        self.config = settings.PARSERS_CONFIG.get("pikabu", {})
+        self.TARGET_URLS = self.config.get("target_urls", "").split(',') if isinstance(self.config.get("target_urls"), str) else self.config.get("target_urls", [])
+        if not self.config:
+            logger.warning("Pikabu configuration not found in settings! Using defaults.")
+            self.TARGET_URLS = ["https://pikabu.ru/community/steam"]
+            
+        super().__init__(default_base_url=self.TARGET_URLS[0] if self.TARGET_URLS else None)
         
-        self.REQUEST_TIMEOUT: int = parser_config.get("request_timeout", Config.REQUEST_TIMEOUT)
-        self.MAX_TEXT_LENGTH: int = parser_config.get("max_text_length", Config.MAX_TEXT_LENGTH)
-        self.VALID_IMAGE_EXTENSIONS = tuple(parser_config.get("valid_image_extensions", []))
-        self.RATE_LIMIT_DELAY: int = parser_config.get("rate_limit_delay", 2)
-        self.SELECTORS = parser_config.get("selectors", {})
-        self.STORE_CONFIG = parser_config.get("stores", {})
+        self.REQUEST_TIMEOUT = self.config.get("request_timeout", settings.REQUEST_TIMEOUT)
+        self.MAX_TEXT_LENGTH = self.config.get("max_text_length", settings.MAX_TEXT_LENGTH)
+        self.VALID_IMAGE_EXTENSIONS = tuple(self.config.get("valid_image_extensions", [".jpg", ".jpeg", ".png", ".gif", ".webp"]))
+        self.RATE_LIMIT_DELAY = self.config.get("rate_limit_delay", 2)
+        self.SELECTORS = self.config.get("selectors", {})
+        self.STORE_CONFIG = self.config.get("stores", {})
 
-        self.llm = LLMG4F()
-        self.storage = JsonStorage(Config.DB_PATH)
+        self.llm = LLMG4F(model_name=settings.LLM_MODEL)
+        self.storage = SQLiteStorage(settings.DB_PATH)
 
     def _clean_store_url(self, url: str, store_name: str) -> str:
         """Очистка и проверка URL магазина."""
@@ -70,6 +73,7 @@ class PikabuParser(BaseParser):
             
             # Find all potential links for this domain
             escaped_domain = domain.replace('.', r'\.')
+            # Allow optional subdomains
             pattern = rf"https?://(?:[\w-]+\.)*{escaped_domain}[^\"'\s,\]\)]*"
             found_urls = re.findall(pattern, text, re.IGNORECASE)
             
@@ -95,12 +99,13 @@ class PikabuParser(BaseParser):
 
             for article in articles:
                 try:
+                    # Need to extract ID first to check if processed
                     post_id = article.get("data-story-id")
                     if not post_id:
                         continue
 
-                    if self.storage.is_processed(post_id):
-                        logger.info(f"[PikabuParser] Post {post_id} already processed, skipping")
+                    if await self.storage.is_processed(post_id):
+                        logger.debug(f"[PikabuParser] Post {post_id} already processed, skipping")
                         continue
 
                     post = await self._parse_article(article, preloaded_html=html) # Pass full HTML here

@@ -1,70 +1,80 @@
 """Configuration for GamesParser project."""
 
-import os
-import yaml
 from pathlib import Path
-from dotenv import load_dotenv
+from typing import Dict, Any, List
+import yaml
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
-
-load_dotenv()
-
-
-class Config:
-    """Класс для хранения и валидации конфигурации приложения."""
+class Settings(BaseSettings):
+    """Application settings using Pydantic."""
+    
+    model_config = SettingsConfigDict(
+        env_file=".env", 
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
     # Base directory
-    BASE_DIR = Path(__file__).resolve().parent
+    BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
 
     # Debug mode
-    DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+    DEBUG: bool = False
+    LOG_LEVEL: str = "INFO"
 
     # Telegram settings
-    TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    TELEGRAM_CHANNEL_ID: str = os.getenv("TEST_CHANNEL_ID" if DEBUG else "TELEGRAM_CHANNEL_ID", "")
+    TELEGRAM_BOT_TOKEN: str
+    TELEGRAM_CHANNEL_ID: str
 
     # Parser settings
-    CHECK_INTERVAL: int = int(os.getenv("CHECK_INTERVAL", "300"))
-    MAX_POSTS_PER_CHECK: int = int(os.getenv("MAX_POSTS_PER_CHECK", "5"))
-    REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "30"))
-    MAX_TEXT_LENGTH: int = int(os.getenv("MAX_TEXT_LENGTH", "4000"))
-    USER_AGENT: str = os.getenv(
-        "USER_AGENT",
+    CHECK_INTERVAL: int = 300
+    MAX_POSTS_PER_CHECK: int = 5
+    REQUEST_TIMEOUT: int = 30
+    MAX_TEXT_LENGTH: int = 4000
+    USER_AGENT: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/91.0.4472.124 Safari/537.36",
+        "Chrome/91.0.4472.124 Safari/537.36"
     )
 
     # Timing settings
-    POST_PROCESSING_DELAY: int = int(os.getenv("POST_PROCESSING_DELAY", "5"))
-    STREAM_POST_PROCESSING_DELAY: int = int(os.getenv("STREAM_POST_PROCESSING_DELAY", "3"))
-    STREAMING_CYCLE_DELAY: int = int(os.getenv("STREAMING_CYCLE_DELAY", "600"))
+    POST_PROCESSING_DELAY: int = 5
+    STREAM_POST_PROCESSING_DELAY: int = 3
+    STREAMING_CYCLE_DELAY: int = 600
 
     # Storage settings
-    DB_PATH: str = os.getenv("TEST_DB_PATH" if DEBUG else "DB_PATH", "news_bot.db")
-    SAVE_HTML: bool = os.getenv("SAVE_HTML", "false").lower() == "true"
-    HTML_DIR: str = os.getenv("HTML_DIR", "html_articles")
-    SAVE_ALL_FETCHED_HTML: bool = os.getenv("SAVE_ALL_FETCHED_HTML", "true").lower() == "true" # New config option
-    FETCHED_HTML_DIR: str = os.getenv("FETCHED_HTML_DIR", "fetched_html") # New config option
+    DB_PATH: str = "news_bot.db"
+    SAVE_HTML: bool = False
+    HTML_DIR: str = "html_articles"
+    SAVE_ALL_FETCHED_HTML: bool = True
+    FETCHED_HTML_DIR: str = "fetched_html"
 
     # LLM settings
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    LLM_MODEL: str = "gpt-4o-mini"
 
-    # Parsers configuration
-    PARSERS_CONFIG: dict = {}
+    # Parsers configuration (loaded from YAML)
+    PARSERS_CONFIG: Dict[str, Any] = {}
 
-    @classmethod
-    def _load_parsers_config(cls):
+    def load_parsers_config(self):
         """Loads parser configurations from a YAML file."""
-        config_path = cls.BASE_DIR / "parsers.yml"
+        config_path = self.BASE_DIR / "src" / "config" / "parsers.yml"
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
-                cls.PARSERS_CONFIG = yaml.safe_load(f)
+                self.PARSERS_CONFIG = yaml.safe_load(f)
 
-    @classmethod
-    def validate(cls) -> bool:
-        """Проверяет наличие обязательных параметров конфигурации."""
-        return bool(cls.TELEGRAM_BOT_TOKEN and cls.TELEGRAM_CHANNEL_ID)
+    def validate_config(self) -> bool:
+        """Validates essential configuration."""
+        return bool(self.TELEGRAM_BOT_TOKEN and self.TELEGRAM_CHANNEL_ID)
 
-# Load the parsers config
-Config._load_parsers_config()
+# Create a global settings instance
+settings = Settings()
+settings.load_parsers_config()
+
+# Alias for backward compatibility if we want to minimize changes immediately,
+# but better to refactor usages.
+class Config:
+    pass
+
+# Map settings to Config class for easier migration (temporary hack or just do full refactor?)
+# I'll try to do full refactor. But to be safe, I can also expose attributes on Config.
+# Actually, let's stick to `settings` export and refactor imports.

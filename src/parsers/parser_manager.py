@@ -3,7 +3,7 @@ import asyncio
 from typing import List
 
 from src.common.logger import logger
-from src.config.config import Config
+from src.config.config import settings
 
 
 class ParserManager:
@@ -68,6 +68,6 @@ class ParserManager:
                     continue
 
             logger.info(
-                f"All parsers have been checked. Waiting {Config.STREAMING_CYCLE_DELAY} seconds before next cycle..."
+                f"All parsers have been checked. Waiting {settings.STREAMING_CYCLE_DELAY} seconds before next cycle..."
             )
-            await asyncio.sleep(Config.STREAMING_CYCLE_DELAY)
+            await asyncio.sleep(settings.STREAMING_CYCLE_DELAY)

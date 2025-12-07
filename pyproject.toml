@@ -6,7 +6,7 @@ authors = ["nikita-dyachkov <nikita.dyachkov@casafari.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.9,<4.0"
+python = "^3.11"
 aiohttp = ">=3.9.0"
 aiofiles = ">=23.2.1"
 beautifulsoup4 = ">=4.12.0"
@@ -20,6 +20,7 @@ pydantic = ">=2.5.0"
 python-dotenv = ">=1.0.0"
 httpx = "^0.28.1"
 pyyaml = "^6.0.3"
+pydantic-settings = "^2.12.0"
 
 [tool.poetry.scripts]
 lint = "bash -c 'poetry run isort . && poetry run ruff format . && poetry run ruff check . --fix && poetry run pylint src'"

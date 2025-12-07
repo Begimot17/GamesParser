@@ -1,15 +1,25 @@
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
+import os
 
-from src.config.config import Config
+from src.config.config import settings
+
+
+logger = logging.getLogger("GamesParser")
 
 
 def setup_logger():
     """Настраивает и возвращает логгер."""
-    log_level = Config.LOG_LEVEL
-    logger = logging.getLogger(__name__)
+    # Prevent duplicate handlers if setup_logger is called multiple times
+    if logger.handlers:
+        return logger
+    
+    log_level = settings.LOG_LEVEL
     logger.setLevel(log_level)
+
+    # Ensure logs directory exists
+    os.makedirs("logs", exist_ok=True)
 
     # Formatter
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -35,4 +45,5 @@ def setup_logger():
     return logger
 
 
-logger = setup_logger()
+# Initialize logger on import
+setup_logger()

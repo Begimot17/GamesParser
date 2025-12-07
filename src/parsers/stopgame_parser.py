@@ -11,30 +11,34 @@ from bs4 import BeautifulSoup, Tag
 from pydantic import ValidationError
 
 from src.common.logger import logger
-from src.config.config import Config
+from src.config.config import settings
 from src.models.models import Post, PostMetadata
 from src.parsers.utils.base_parser import BaseParser
 from src.services.llm_g4f import LLMG4F
-from src.storage.storage import JsonStorage
+from src.storage.sqlite_storage import SQLiteStorage
 
 
 class StopGameParser(BaseParser):
-    """Парсер для получения постов с StopGame.ru."""
+    """Парсер для получения новостей с StopGame.ru."""
 
     def __init__(self):
-        parser_config = Config.PARSERS_CONFIG.get("stopgame", {})
-        self.TARGET_URLS = parser_config.get("target_urls", "").split(',')
-        super().__init__(default_base_url=self.TARGET_URLS[0])
+        self.config = settings.PARSERS_CONFIG.get("stopgame", {})
+        self.TARGET_URLS = self.config.get("target_urls", "").split(',') if isinstance(self.config.get("target_urls"), str) else self.config.get("target_urls", [])
+        if not self.config:
+            logger.warning("StopGame configuration not found in settings! Using defaults.")
+            self.TARGET_URLS = ["https://stopgame.ru/news"]
 
-        self.REQUEST_TIMEOUT: int = parser_config.get("request_timeout", Config.REQUEST_TIMEOUT)
-        self.MAX_TEXT_LENGTH: int = parser_config.get("max_text_length", Config.MAX_TEXT_LENGTH)
-        self.VALID_IMAGE_EXTENSIONS = tuple(parser_config.get("valid_image_extensions", []))
-        self.RATE_LIMIT_DELAY: int = parser_config.get("rate_limit_delay", 2)
-        self.SELECTORS = parser_config.get("selectors", {})
-        self.STORE_CONFIG = parser_config.get("stores", {})
+        super().__init__(default_base_url=self.TARGET_URLS[0] if self.TARGET_URLS else None)
 
-        self.storage = JsonStorage(Config.DB_PATH)
-        self.llm = LLMG4F()
+        self.REQUEST_TIMEOUT = self.config.get("request_timeout", settings.REQUEST_TIMEOUT)
+        self.MAX_TEXT_LENGTH = self.config.get("max_text_length", settings.MAX_TEXT_LENGTH)
+        self.VALID_IMAGE_EXTENSIONS = tuple(self.config.get("valid_image_extensions", [".jpg", ".jpeg", ".png", ".gif", ".webp"]))
+        self.RATE_LIMIT_DELAY = self.config.get("rate_limit_delay", 2)
+        self.SELECTORS = self.config.get("selectors", {})
+        self.STORE_CONFIG = self.config.get("stores", {})
+
+        self.storage = SQLiteStorage(settings.DB_PATH)
+        self.llm = LLMG4F(model_name=settings.LLM_MODEL)
 
     async def _process_url(self, target_url: str) -> AsyncIterator[Post]:
         """Processes a single URL and yields posts."""
@@ -51,8 +55,12 @@ class StopGameParser(BaseParser):
 
             for article in articles:
                 try:
-                    post = await self._parse_article(article, preloaded_html=html) # Pass full HTML here
-                    if post and not self.storage.is_processed(post.id):
+                    post = await self._parse_article(article, preloaded_html=html)
+                    if post:
+                        if await self.storage.is_processed(post.id):
+                            logger.debug(f"[StopGameParser] Post {post.id} already processed, skipping")
+                            continue
+                            
                         logger.info(f"[StopGameParser] Yielding post {post.id}")
                         yield post
                 except Exception as e:
@@ -88,7 +96,7 @@ class StopGameParser(BaseParser):
         return match.group(1) if match else None
 
     def _parse_date(self, date_str: str) -> Optional[datetime]:
-        """Parse date from string like '5 апреля 2025, 23:22', '4 декабря, 14:13', 'Вчера, 15:30'."""
+        """Parse date from string like '15 июля 2024 в 23:22', 'Вчера в 18:00'."""
         try:
             date_str = re.sub(r"<i.*?</i>", "", date_str).strip()
             
@@ -103,34 +111,30 @@ class StopGameParser(BaseParser):
                 date_str = date_str.replace(ru, en)
 
             # Handle relative dates
-            now = datetime.now()
+            now = datetime.now(timezone(timedelta(hours=3)))
             if "сегодня" in date_str.lower():
                 date_part = now.strftime("%d %B %Y")
-                time_part = re.search(r"(\d{1,2}:\d{2})", date_str).group(1)
+                time_match = re.search(r"(\d{1,2}:\d{2})", date_str)
+                time_part = time_match.group(1) if time_match else "00:00"
                 date_str = f"{date_part} {time_part}"
             elif "вчера" in date_str.lower():
                 yesterday = now - timedelta(days=1)
                 date_part = yesterday.strftime("%d %B %Y")
-                time_part = re.search(r"(\d{1,2}:\d{2})", date_str).group(1)
+                time_match = re.search(r"(\d{1,2}:\d{2})", date_str)
+                time_part = time_match.group(1) if time_match else "00:00"
                 date_str = f"{date_part} {time_part}"
             
             # Try multiple formats
             formats = [
                 "%d %B %Y в %H:%M",
                 "%d %B %Y, %H:%M",
-                "%d %B, %H:%M", # Missing year
-                "%d %B %Y %H:%M", # For constructed relative dates
+                "%d %B %Y %H:%M",
             ]
             
             dt = None
             for fmt in formats:
                 try:
                     dt = datetime.strptime(date_str, fmt)
-                    if "%Y" not in fmt:
-                        dt = dt.replace(year=now.year)
-                        # If date is in future (e.g. Dec 31 detected in Jan 1), subtract year ??
-                        # Assuming posts are recent. If post date > now + 1 day, maybe it's last year.
-                        # But simpler is enough for now.
                     break
                 except ValueError:
                     continue
@@ -146,9 +150,7 @@ class StopGameParser(BaseParser):
 
     def _extract_store_links(self, article_html: Tag) -> dict:
         """Extract store links from article."""
-        stores: dict = {} # Initialize stores here
-        # StopGame doesn't have a specific selector for store links like VGTimes,
-        # so we'll search all links within the article content.
+        stores: dict = {}
         for link_tag in article_html.find_all('a', href=True):
             href = link_tag.get("href", "")
             for store_name, store_info in self.STORE_CONFIG.items():
@@ -157,7 +159,6 @@ class StopGameParser(BaseParser):
                     cleaned_url = self._clean_store_url(href, store_name)
                     if cleaned_url and store_name not in stores:
                         stores[store_name] = cleaned_url
-                        # Assuming only one link per store is needed
                         break 
         return stores
 
@@ -218,16 +219,10 @@ class StopGameParser(BaseParser):
         image_elem = article_html.select_one(self.SELECTORS["image"])
         image_url = image_elem.get("src") if image_elem else None
         
-        # Date parsing for StopGame using partial class match or text node
         date = None
         date_elem = article_html.select_one(self.SELECTORS["date"])
         if date_elem:
              date = self._parse_date(date_elem.get_text(strip=True))
-        else:
-             # Fallback: Try to find date-like text in the partial class structures
-             # Based on analysis, it might be in a span with class ending in _date_...
-             # The new selector "span[class*='_date_']" should catch it.
-             pass
 
         return {
             "id": article_id,
@@ -245,7 +240,7 @@ class StopGameParser(BaseParser):
 
         post_id = initial_data["id"]
         try:
-            content = ""  # Оставляем пустым, LLM заполнит
+            content = ""  # Let LLM fill it
             images = [initial_data["image_url"]] if initial_data["image_url"] else []
             store_links = self._extract_store_links(article_html)
 
@@ -291,4 +286,3 @@ class StopGameParser(BaseParser):
         except Exception as e:
             logger.error(f"Error fetching page text from {post_link}: {e}", exc_info=True)
             return ""
-        

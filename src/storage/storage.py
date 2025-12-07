@@ -33,13 +33,13 @@ class JsonStorage(Storage):
         except (OSError, TypeError) as e:
             logger.error(f"Error saving data: {e}", exc_info=True)
 
-    def mark_as_processed(self, post_id: str) -> None:
+    async def mark_as_processed(self, post_id: str) -> None:
         self.processed_posts.add(post_id)
         self._save_data()
         logger.info(f"Marked post {post_id} as processed")
 
-    def is_processed(self, post_id: str) -> bool:
+    async def is_processed(self, post_id: str) -> bool:
         return post_id in self.processed_posts
 
-    def close(self) -> None:
+    async def close(self) -> None:
         self._save_data()

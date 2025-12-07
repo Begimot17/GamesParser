@@ -1,146 +1,104 @@
-"""Main entry point for GamesParser project."""
-
 import asyncio
+import logging
 import sys
-from datetime import datetime
-
-from telegram.error import NetworkError, RetryAfter, TimedOut
+from typing import List
 
 from src.bot.bot import TelegramNewsBot
-from src.common.logger import logger
-from src.config.config import Config
+from src.common.logger import setup_logger, logger
+from src.config.config import settings
 from src.parsers.parser_manager import ParserManager
 from src.parsers.pikabu_parser import PikabuParser
 from src.parsers.stopgame_parser import StopGameParser
 from src.parsers.vgtimes_parser import VGTimesParser
-from src.storage.storage import JsonStorage
+from src.storage.sqlite_storage import SQLiteStorage
 
 
 class NewsMonitor:
-    """Class for monitoring news and sending them to Telegram."""
+    """Main class for monitoring news sources."""
 
     def __init__(self):
-        logger.info("Initializing NewsMonitor...")
-        if not Config.validate():
-            raise ValueError(
-                "Invalid configuration. Please check TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID",
-            )
+        self.settings = settings
+        
+        self.storage = SQLiteStorage(self.settings.DB_PATH)
         self.bot = TelegramNewsBot(
-            token=Config.TELEGRAM_BOT_TOKEN,
-            channel_id=Config.TELEGRAM_CHANNEL_ID,
+            token=self.settings.TELEGRAM_BOT_TOKEN,
+            channel_id=self.settings.TELEGRAM_CHANNEL_ID
         )
-        self.parsers = [VGTimesParser(), PikabuParser(), StopGameParser()]
-        self.parser_manager = ParserManager(parsers=self.parsers)
-        self.storage = JsonStorage(db_path=Config.DB_PATH)
-        logger.info("NewsMonitor initialized successfully")
 
-    async def _process_and_send_post(self, post) -> bool:
-        """
-        Processes and sends a single post.
-        Handles formatting, sending, and marking as processed.
-        """
-        post_id = getattr(post, "id", "unknown")
-        try:
-            logger.info(f"Processing post {post_id}: {post.title}")
+        # Initialize parsers
+        self.parsers = [
+            PikabuParser(),
+            VGTimesParser(),
+            StopGameParser()
+        ]
+        self.parser_manager = ParserManager(self.parsers)
 
-            if hasattr(post, "metadata") and post.metadata:
-                images = getattr(post.metadata, "images", [])
-            else:
-                images = []
-
-            formatted_message = self.bot._format_message(post)
-            success = await self.bot.send_message(
-                text=formatted_message,
-                images=images,
-            )
-
-            if success:
-                self.storage.mark_as_processed(post.id)
-                logger.info(f"Successfully processed and sent post {post.id}")
-            else:
-                logger.error(f"Failed to send post {post_id} after multiple retries.")
-
-            return success
-        except (TimedOut, NetworkError) as e:
-            logger.error(
-                f"Network error while sending post {post_id}: {e}. Will retry later."
-            )
-            return False
-        except RetryAfter as e:
-            logger.warning(
-                f"Rate limit hit for post {post_id}. Waiting {e.retry_after} seconds."
-            )
-            await asyncio.sleep(e.retry_after)
-            return False
-        except Exception as e:
-            logger.error(
-                f"An unexpected error occurred while processing post {post_id}: {e}",
-                exc_info=True,
-            )
-            return False
-
-    async def process_new_posts(self) -> None:
-        """Fetch, filter, and process new posts."""
-        logger.info("Starting to process new posts...")
-        try:
-            posts = await self.parser_manager.fetch_all_posts()
-            if not posts:
-                logger.info("No new posts found")
-                return
-            logger.info("Found %d posts", len(posts))
-
-            new_posts = [
-                post for post in posts if not self.storage.is_processed(post.id)
-            ]
-            logger.info("After additional filtering: %d new posts", len(new_posts))
-
-            new_posts.sort(
-                key=lambda x: x.metadata.date
-                if x.metadata and x.metadata.date
-                else datetime.min.replace(tzinfo=datetime.now().astimezone().tzinfo),
-            )
-
-            for post in new_posts:
-                await self._process_and_send_post(post)
-                await asyncio.sleep(Config.POST_PROCESSING_DELAY)
-        except Exception as e:
-            logger.error(f"Error in process_new_posts: {e}", exc_info=True)
-
-    async def stream_and_process_posts(self) -> None:
-        """Stream posts and process them as they arrive."""
-        logger.info("Starting stream processing of posts...")
-        try:
-            async for post in self.parser_manager.stream_posts():
-                if self.storage.is_processed(post.id):
-                    logger.info(f"Post {post.id} already processed, skipping...")
-                    continue
-
-                await self._process_and_send_post(post)
-                await asyncio.sleep(Config.STREAM_POST_PROCESSING_DELAY)
-
-        except Exception as e:
-            logger.error(f"Error in stream_and_process_posts: {e}", exc_info=True)
-
-    async def run(self, use_streaming: bool = True) -> None:
-        """Run the main monitoring loop."""
-        logger.info(
-            f"Starting NewsMonitor in {'streaming' if use_streaming else 'batch'} mode..."
-        )
+    async def run(self, use_streaming: bool = True):
+        """Runs the monitoring loop."""
+        logger.info("Starting NewsMonitor...")
         try:
             if use_streaming:
-                await self.stream_and_process_posts()
+                await self._run_streaming()
             else:
-                while True:
-                    await self.process_new_posts()
-                    logger.info(
-                        f"Waiting {Config.CHECK_INTERVAL} seconds before next check..."
-                    )
-                    await asyncio.sleep(Config.CHECK_INTERVAL)
-        except Exception as e:
-            logger.error(f"Error in main loop: {e}")
+                await self._run_polling()
+        except KeyboardInterrupt:
+            logger.info("NewsMonitor stopped by user.")
         finally:
+            await self.storage.close()
             await self.bot.close()
-            self.storage.close()
+
+    async def _run_streaming(self):
+        """Runs the monitoring loop using streaming."""
+        logger.info("Starting streaming mode...")
+        async for post in self.parser_manager.stream_posts():
+            try:
+                if await self.storage.is_processed(post.id):
+                    continue
+
+                logger.info(f"New post found: {post.title} ({post.link})")
+                success = await self.bot.send_message(
+                    self.bot._format_message(post),
+                    images=post.metadata.images if post.metadata else None
+                )
+                
+                if success:
+                    await self.storage.mark_as_processed(post.id)
+                    logger.info(f"Post {post.id} processed and sent.")
+                else:
+                    logger.error(f"Failed to send post {post.id}")
+                
+                await asyncio.sleep(self.settings.STREAM_POST_PROCESSING_DELAY)
+
+            except Exception as e:
+                logger.error(f"Error processing post in stream: {e}", exc_info=True)
+
+    async def _run_polling(self):
+        """Runs the monitoring loop using polling (legacy)."""
+        logger.info("Starting polling mode...")
+        while True:
+            try:
+                 posts = await self.parser_manager.fetch_all_posts()
+                 for post in posts:
+                    if await self.storage.is_processed(post.id):
+                        continue
+
+                    logger.info(f"New post found: {post.title}")
+                    success = await self.bot.send_message(
+                        self.bot._format_message(post),
+                        images=post.metadata.images if post.metadata else None
+                    )
+
+                    if success:
+                        await self.storage.mark_as_processed(post.id)
+                    
+                    await asyncio.sleep(self.settings.POST_PROCESSING_DELAY)
+                 
+                 logger.info(f"Sleeping for {self.settings.CHECK_INTERVAL} seconds...")
+                 await asyncio.sleep(self.settings.CHECK_INTERVAL)
+
+            except Exception as e:
+                logger.error(f"Error in polling loop: {e}", exc_info=True)
+                await asyncio.sleep(self.settings.CHECK_INTERVAL)
 
 
 def main() -> None:

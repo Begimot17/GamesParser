@@ -4,7 +4,7 @@ from src.parsers.pikabu_parser import PikabuParser
 from bs4 import BeautifulSoup
 
 class TestPikabuParser(unittest.TestCase):
-    @patch('src.config.config.Config.PARSERS_CONFIG', {
+    @patch('src.config.config.settings.PARSERS_CONFIG', {
         'pikabu': {
             'request_timeout': 10,
             'max_text_length': 1000,

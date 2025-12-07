@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup, Tag
 from src.parsers.stopgame_parser import StopGameParser
 
 class TestStopGameParser(unittest.TestCase):
-    @patch('src.config.config.Config.PARSERS_CONFIG', {
+    @patch('src.config.config.settings.PARSERS_CONFIG', {
         'stopgame': {
             'request_timeout': 10,
             'max_text_length': 1000,

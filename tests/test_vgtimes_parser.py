@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup, Tag
 from src.parsers.vgtimes_parser import VGTimesParser
 
 class TestVGTimesParser(unittest.IsolatedAsyncioTestCase):
-    @patch('src.config.config.Config.PARSERS_CONFIG', {
+    @patch('src.config.config.settings.PARSERS_CONFIG', {
         'vgtimes': {
             'request_timeout': 10,
             'max_text_length': 1000,

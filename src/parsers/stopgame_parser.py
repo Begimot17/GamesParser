@@ -240,13 +240,16 @@ class StopGameParser(BaseParser):
 
         post_id = initial_data["id"]
         try:
+            title = initial_data["title"]
             content = ""  # Let LLM fill it
             images = [initial_data["image_url"]] if initial_data["image_url"] else []
             store_links = self._extract_store_links(article_html)
 
-            title, content, images, store_links = await self._update_post_with_llm_data(
-                initial_data["title"], content, images, initial_data["link"], store_links, preloaded_html
-            )
+            # Use LLM to enrich post data only if enabled
+            if settings.ENABLE_LLM:
+                title, content, images, store_links = await self._update_post_with_llm_data(
+                    title, content, images, initial_data["link"], store_links, preloaded_html
+                )
 
             metadata = PostMetadata(
                 store_links=store_links,

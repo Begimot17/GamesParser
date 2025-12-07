@@ -51,6 +51,7 @@ class Settings(BaseSettings):
 
     # LLM settings
     LLM_MODEL: str = "gpt-4o-mini"
+    ENABLE_LLM: bool = False  # Set to True to enable LLM data enrichment
 
     # Parsers configuration (loaded from YAML)
     PARSERS_CONFIG: Dict[str, Any] = {}

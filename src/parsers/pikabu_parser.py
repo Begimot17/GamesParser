@@ -256,10 +256,16 @@ class PikabuParser(BaseParser):
 
         post_id = initial_data["id"]
         try:
-            # Update with LLM extracted data
-            title, content, images, store_links = await self._update_post_with_llm_data(
-                initial_data["title"], initial_data["content"], initial_data["images"], initial_data["link"], {}, preloaded_html
-            )
+            title = initial_data["title"]
+            content = initial_data["content"]
+            images = initial_data["images"]
+            store_links = {}
+
+            # Use LLM to enrich post data only if enabled
+            if settings.ENABLE_LLM:
+                title, content, images, store_links = await self._update_post_with_llm_data(
+                    title, content, images, initial_data["link"], store_links, preloaded_html
+                )
 
             metadata = PostMetadata(
                 rating=initial_data["rating"], 

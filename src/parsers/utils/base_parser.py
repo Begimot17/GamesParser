@@ -118,7 +118,7 @@ class BaseParser(ABC):
                 async with self.session.get(url, timeout=self.REQUEST_TIMEOUT) as response:
                     response.raise_for_status()
                     html_content = await response.text()
-                    await self._save_fetched_html(html_content, url) # Save fetched HTML
+                    await self._save_fetched_html(html_content, self.__class__.__name__) # Save fetched HTML
                     return html_content
             except Exception as e:
                 if attempt == max_retries - 1:

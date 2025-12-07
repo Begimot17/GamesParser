@@ -61,7 +61,7 @@ class VGTimesParser(BaseParser):
 
             for article in articles:
                 try:
-                    post = await self._parse_article(article, preloaded_html=html) # Pass full HTML here
+                    post = await self._parse_article(article)
                     if post and not self.storage.is_processed(post.id):
                         logger.info(f"[VGTimesParser] Yielding post {post.id}")
                         yield post
@@ -116,10 +116,23 @@ class VGTimesParser(BaseParser):
         return match.group(1) if match else None
 
     def _parse_date(self, date_str: str) -> Optional[datetime]:
-        """Parse date from string like '5 апреля 2025, 23:22'."""
-        logger.info(f"[VGTimesParser] Attempting to parse date string: '{date_str}'") # Changed to INFO
+        """Parse date from string like '5 апреля 2025, 23:22', 'Вчера, 15:58', or 'Сегодня, 15:58'."""
+        logger.info(f"[VGTimesParser] Attempting to parse date string: '{date_str}'")
         try:
             date_str = re.sub(r"<i.*?</i>", "", date_str).strip()
+            now = datetime.now(timezone(timedelta(hours=3)))
+
+            if "Вчера" in date_str:
+                time_str = date_str.split(",")[1].strip()
+                yesterday = now - timedelta(days=1)
+                dt = datetime.strptime(f"{yesterday.strftime('%d %m %Y')} {time_str}", "%d %m %Y %H:%M")
+                return dt.replace(tzinfo=timezone(timedelta(hours=3)))
+
+            if "Сегодня" in date_str:
+                time_str = date_str.split(",")[1].strip()
+                dt = datetime.strptime(f"{now.strftime('%d %m %Y')} {time_str}", "%d %m %Y %H:%M")
+                return dt.replace(tzinfo=timezone(timedelta(hours=3)))
+
             ru_to_en = {
                 "января": "January", "февраля": "February", "марта": "March",
                 "апреля": "April", "мая": "May", "июня": "June", "июля": "July",
@@ -135,11 +148,20 @@ class VGTimesParser(BaseParser):
             logger.error(f"Error parsing date '{date_str}': {e}", exc_info=True)
             return None
 
-    def _clean_store_url(self, url: str, store_name: str) -> str:
-        """Очистка и проверка URL магазина."""
+    async def _clean_store_url(self, url: str, store_name: str) -> str:
+        """Очистка и проверка URL магазина, включая обработку редиректов."""
         if not url:
             return ""
-        
+
+        if "/go/" in url:
+            try:
+                async with self.session.head(url, allow_redirects=True, timeout=self.REQUEST_TIMEOUT) as response:
+                    url = str(response.url)
+                    logger.info(f"Redirected URL: {url}")
+            except Exception as e:
+                logger.error(f"Could not resolve redirect for {url}: {e}")
+                return ""
+
         store_info = self.STORE_CONFIG.get(store_name, {})
         domain = store_info.get("domain")
         validation_regex = store_info.get("validation_regex")
@@ -147,7 +169,7 @@ class VGTimesParser(BaseParser):
         if not domain or domain not in url:
             return ""
 
-        url = self._normalize_url(url, base_url=self.TARGET_URLS[0]) # Pass base_url
+        url = self._normalize_url(url, base_url=self.TARGET_URLS[0])
         url = url.split("?")[0].split("#")[0]
 
         if validation_regex and not re.search(validation_regex, url):
@@ -155,44 +177,27 @@ class VGTimesParser(BaseParser):
         
         return url
 
-    def _extract_store_links(self, article_html: Tag) -> dict:
+    async def _extract_store_links(self, article_html: Tag) -> dict:
         """Extract store links from article."""
-        stores: dict = {} # Initialize stores here
+        stores: dict = {}
         link_elements = article_html.select(self.SELECTORS["store_links"])
         for link in link_elements:
             href = link.get("href", "")
             for store_name, store_info in self.STORE_CONFIG.items():
-                if store_info.get("domain") in href:
-                    cleaned_url = self._clean_store_url(href, store_name)
+                domain_to_check = "vgtimes.ru/go/" if store_name == "epicgames" else store_info.get("domain")
+                if domain_to_check in href:
+                    cleaned_url = await self._clean_store_url(href, store_name)
                     if cleaned_url:
                         stores[store_name] = cleaned_url
                         break
         logger.info(f"[VGTimesParser] Extracted store links: {stores}")
         return stores
 
-    async def _update_post_with_llm_data(self, title: str, content: str, images: list, link: str, store_links: dict, preloaded_html: Optional[str] = None) -> tuple[str, str, list, dict]:
-        """Updates post data with information extracted by LLM."""
-        page_text = await self._fetch_full_page_text(link, preloaded_html=preloaded_html)
-        if page_text:
-            llm_data = await self.llm.extract_article_info(page_text, link)
-            logger.info(f"[VGTimesParser] LLM extracted data for {link}: {llm_data}")
-
-            if llm_data.get("title"):
-                title = llm_data["title"]
-            if llm_data.get("content"):
-                content = llm_data["content"]
-            if llm_data.get("store_links"):
-                store_links = {k: v for k, v in llm_data["store_links"].items() if v and v.strip()}
-            if llm_data.get("images"):
-                images.extend(llm_data["images"])
-        
-        return title, content, images, store_links
-
-    def _parse_initial_post_data(self, article_html: Tag) -> Optional[Dict[str, Any]]:
-        """Parses the initial post data from the article tag."""
+    async def _parse_article(self, article_html: Tag) -> Optional[Post]:
+        """Парсинг одной статьи со страницы списка."""
         link_elem = article_html.select_one(self.SELECTORS["link"])
         if not link_elem:
-            logger.warning("[VGTimesParser] No link element found in article.")
+            logger.warning("[VGTimesParser] No link element found in article on list page.")
             return None
 
         link = link_elem.get("href")
@@ -221,81 +226,43 @@ class VGTimesParser(BaseParser):
         rating_elem = article_html.select_one(self.SELECTORS["rating"])
         rating = rating_elem.get_text(strip=True) if rating_elem else None
 
-        date_elem = article_html.select_one(self.SELECTORS["date"])
-        raw_date_text = date_elem.get_text(strip=True) if date_elem else ""
-        logger.info(f"[VGTimesParser] Raw date text from selector for article {article_id}: '{raw_date_text}'")
-        date = self._parse_date(raw_date_text) if raw_date_text else None
-        if not date:
-            logger.warning(f"[VGTimesParser] Could not parse date for article {article_id}")
-
-        logger.info(f"[VGTimesParser] Initial data for post {article_id}: title='{title}', link='{link}', image_url='{image_url}', rating='{rating}', date='{date}'")
-
-        return {
-            "id": article_id,
-            "title": title,
-            "link": link,
-            "image_url": image_url,
-            "rating": rating,
-            "date": date,
-        }
-
-    async def _parse_article(self, article_html: Tag, preloaded_html: Optional[str] = None) -> Optional[Post]:
-        """Парсинг одной статьи."""
-        initial_data = self._parse_initial_post_data(article_html)
-        if not initial_data:
-            return None
-
-        post_id = initial_data["id"]
         try:
-            content = ""  # Оставляем пустым, LLM заполнит
-            images = [initial_data["image_url"]] if initial_data["image_url"] else []
-            store_links = self._extract_store_links(article_html)
+            # Fetch the full article page to get content and date
+            full_article_html = await self._fetch_page(link)
+            soup = BeautifulSoup(full_article_html, "html.parser")
 
-            title, content, images, store_links = await self._update_post_with_llm_data(
-                initial_data["title"], content, images, initial_data["link"], store_links, preloaded_html
-            )
-            logger.info(f"[VGTimesParser] Final extracted data for post {post_id}: content_len={len(content)}, images_count={len(images)}, store_links_count={len(store_links)}")
+            content_elem = soup.select_one(self.SELECTORS["content"])
+            content = content_elem.get_text(" ", strip=True) if content_elem else ""
+            
+            date_elem = soup.select_one(self.SELECTORS["date"])
+            raw_date_text = date_elem.get_text(strip=True) if date_elem else ""
+            date = self._parse_date(raw_date_text) if raw_date_text else None
+            if not date:
+                logger.warning(f"[VGTimesParser] Could not parse date for article {article_id} from its page.")
+
+            images = [image_url] if image_url else []
+            store_links = await self._extract_store_links(article_html) # Links from list page are usually enough
+
+            # Optionally, you can re-run LLM or other extractions on the full page content
+            # For now, we'll use the extracted content directly.
 
             metadata = PostMetadata(
-                rating=initial_data["rating"],
+                rating=rating,
                 store_links=store_links,
                 images=list(set(images)),
-                date=initial_data["date"],
+                date=date,
             )
 
             return Post(
-                id=post_id,
+                id=article_id,
                 title=title,
-                link=initial_data["link"],
+                link=link,
                 content=content,
                 metadata=metadata,
             )
         except ValidationError as e:
-            logger.error(f"Validation error for article {initial_data.get('link')}: {e}")
+            logger.error(f"Validation error for article {link}: {e}")
             return None
         except Exception as e:
-            logger.error(f"Error parsing article {initial_data.get('link')}: {e}", exc_info=True)
+            logger.error(f"Error parsing full article page {link}: {e}", exc_info=True)
             return None
-
-    async def _fetch_full_page_text(self, post_link: str, preloaded_html: Optional[str] = None) -> str:
-        """Fetch the full page text for LLM processing."""
-        try:
-            logger.info(f"[VGTimesParser] Fetching full page text from {post_link}")
-            if preloaded_html:
-                html = preloaded_html
-            else:
-                html = await self._fetch_page(post_link)
-            
-            if not html:
-                logger.warning(f"[VGTimesParser] No HTML fetched for {post_link} for LLM processing.")
-                return ""
-            soup = BeautifulSoup(html, "html.parser")
-            for element in soup(["script", "style", "nav", "header", "footer", "aside"]):
-                element.decompose()
-            main_content = soup.select_one(self.SELECTORS["content"])
-            text = main_content.get_text(" ", strip=True) if main_content else ""
-            logger.info(f"[VGTimesParser] Extracted {len(text)} characters of text from {post_link} for LLM. HTML length: {len(html)}")
-            return text
-        except Exception as e:
-            logger.error(f"[VGTimesParser] Error fetching page text from {post_link}: {e}", exc_info=True)
-            return ""

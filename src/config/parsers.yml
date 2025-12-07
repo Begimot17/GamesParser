@@ -6,7 +6,7 @@ pikabu:
   target_urls: "https://pikabu.ru/community/steam"
   selectors:
     articles: "article[data-story-id]"
-    title: "h2.story__title a.story__title-link"
+    title: "a.story__title-link"
     link: "a.story__title-link"
     content: "div.story__content"
     rating: "div.story__rating-count"
@@ -42,14 +42,16 @@ vgtimes:
   rate_limit_delay: 2
   target_urls: "https://vgtimes.ru/free/"
   selectors:
+    # Selectors for the list page (https://vgtimes.ru/free/)
     articles: "ul.list-items > li"
     title: "div.item-name.type0 a:first-child"
     link: "div.item-name.type0 a:first-child"
     image: "div.image_wrap.type0 img"
     rating: "div.rrating div.text"
     store_links: 'a.l_ks[target="_blank"]'
-    content: "div.news-item-content__text" # Updated content selector
-    date: "span.date" # Updated date selector
+    # Selectors for the single article page
+    content: "div.article_block.a_text"
+    date: "span.post_date"
   stores:
     steam:
       domain: "store.steampowered.com"

@@ -19,6 +19,7 @@ lxml = ">=4.9.3"
 pydantic = ">=2.5.0"
 python-dotenv = ">=1.0.0"
 httpx = "^0.28.1"
+pyyaml = "^6.0.3"
 
 [tool.poetry.scripts]
 lint = "bash -c 'poetry run isort . && poetry run ruff format . && poetry run ruff check . --fix && poetry run pylint src'"

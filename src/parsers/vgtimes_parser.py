@@ -184,8 +184,8 @@ class VGTimesParser(BaseParser):
         for link in link_elements:
             href = link.get("href", "")
             for store_name, store_info in self.STORE_CONFIG.items():
-                domain_to_check = "vgtimes.ru/go/" if store_name == "epicgames" else store_info.get("domain")
-                if domain_to_check in href:
+                domain = store_info.get("domain")
+                if domain and domain in href:
                     cleaned_url = await self._clean_store_url(href, store_name)
                     if cleaned_url:
                         stores[store_name] = cleaned_url

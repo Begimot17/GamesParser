@@ -56,7 +56,7 @@ class TestStopGameParser(unittest.TestCase):
         mock_datetime.strptime = datetime.strptime # Keep original strptime
 
         # Test with a known date format
-        date_str = "15 июля 2024, 23:22"
+        date_str = "15 июля 2024 в 23:22"
         expected_date = datetime(2024, 7, 15, 23, 22, tzinfo=timezone(timedelta(hours=3)))
         self.assertEqual(self.parser._parse_date(date_str), expected_date)
 

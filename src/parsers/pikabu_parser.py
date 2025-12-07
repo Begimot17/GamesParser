@@ -70,7 +70,7 @@ class PikabuParser(BaseParser):
             
             # Find all potential links for this domain
             escaped_domain = domain.replace('.', r'\.')
-            pattern = rf"https?://(?:www\.)?{escaped_domain}[^\"'\s,\]\)]*"
+            pattern = rf"https?://(?:[\w-]+\.)*{escaped_domain}[^\"'\s,\]\)]*"
             found_urls = re.findall(pattern, text, re.IGNORECASE)
             
             for url in found_urls:

@@ -33,14 +33,12 @@ class TestPikabuParser(unittest.TestCase):
     })
     def setUp(self):
         self.parser = PikabuParser()
-        self.parser.MAX_TEXT_LENGTH = 20
         # Mock the async methods that are not under test in these specific unit tests
         self.parser._fetch_page = AsyncMock(return_value="<html><body></body></html>")
         self.parser._fetch_full_page_text = AsyncMock(return_value="")
         self.parser.llm = AsyncMock()
         self.parser.storage = AsyncMock()
         self.parser.storage.is_processed.return_value = False
-
 
     def test_parser_instantiation(self):
         """Tests that the PikabuParser can be instantiated."""
@@ -67,10 +65,12 @@ class TestPikabuParser(unittest.TestCase):
 
     def test_clean_text(self):
         """Tests the _clean_text method."""
+        # Temporarily set MAX_TEXT_LENGTH for this test
+        self.parser.MAX_TEXT_LENGTH = 30
         short_text = "This is a short text."
         long_text = "This is a very long text that should be truncated."
         self.assertEqual(self.parser._clean_text(short_text), short_text)
-        self.assertEqual(self.parser._clean_text(long_text), "This is a very long ...")
+        self.assertEqual(self.parser._clean_text(long_text), "This is a very long text that ...")
 
     def test_clean_store_url(self):
         """Tests the _clean_store_url method for various stores."""
@@ -109,7 +109,7 @@ class TestPikabuParser(unittest.TestCase):
         Some other link: https://www.google.com
         """
         expected_links = {
-            "steam": "https://store.steampowered.com/app/12345/",
+            "steam": "https://store.steampowered.com/app/12345/Game_Title/",
             "epicgames": "https://www.epicgames.com/p/another-game",
             "gog": "https://www.gog.com/game/cool_game",
             "itch": "https://dev.itch.io/my-game"

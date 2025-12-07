@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup, Tag
 from src.parsers.vgtimes_parser import VGTimesParser
 
-class TestVGTimesParser(unittest.TestCase):
+class TestVGTimesParser(unittest.IsolatedAsyncioTestCase):
     @patch('src.config.config.Config.PARSERS_CONFIG', {
         'vgtimes': {
             'request_timeout': 10,
@@ -29,7 +29,7 @@ class TestVGTimesParser(unittest.TestCase):
             }
         }
     })
-    def setUp(self):
+    async def asyncSetUp(self):
         self.parser = VGTimesParser()
         # Mock async methods not directly under test
         self.parser._fetch_page = AsyncMock(return_value="<html><body></body></html>")
@@ -38,17 +38,17 @@ class TestVGTimesParser(unittest.TestCase):
         self.parser.storage = AsyncMock()
         self.parser.storage.is_processed.return_value = False
 
-    def test_parser_instantiation(self):
+    async def test_parser_instantiation(self):
         """Tests that the VGTimesParser can be instantiated."""
         self.assertIsInstance(self.parser, VGTimesParser)
 
-    def test_extract_id(self):
+    async def test_extract_id(self):
         """Tests the _extract_id method."""
         self.assertEqual(self.parser._extract_id("https://vgtimes.ru/games/12345-game-name/"), "12345")
         self.assertIsNone(self.parser._extract_id("https://vgtimes.ru/games/game-name/"))
         self.assertIsNone(self.parser._extract_id(""))
 
-    def test_parse_date(self):
+    async def test_parse_date(self):
         """Tests the _parse_date method."""
         # Test with a known date format
         date_str = "5 апреля 2025, 23:22"
@@ -64,7 +64,7 @@ class TestVGTimesParser(unittest.TestCase):
         self.assertIsNone(self.parser._parse_date("invalid date string"))
         self.assertIsNone(self.parser._parse_date(""))
 
-    def test_extract_store_links(self):
+    async def test_extract_store_links(self):
         """Tests the _extract_store_links method."""
         html_content = """
         <div class="item">
@@ -76,21 +76,29 @@ class TestVGTimesParser(unittest.TestCase):
         """
         article_html = BeautifulSoup(html_content, 'html.parser').find('div', class_='item')
         
+        # Ensure _clean_store_url is mocked or works
+        # Since _extract_store_links calls _clean_store_url which calls self.session.head
+        # we might need to mock _clean_store_url or self.session.
+        # But VGTimesParser._clean_store_url handles session HEAD requests.
+        # It's better to mock _clean_store_url to avoid network calls.
+        
+        self.parser._clean_store_url = AsyncMock(side_effect=lambda url, name: url)
+
         expected_links = {
             "steam": "https://store.steampowered.com/app/12345/",
             "epicgames": "https://www.epicgames.com/p/game-name",
             "gog": "https://www.gog.com/game/another_game"
         }
-        self.assertDictEqual(self.parser._extract_store_links(article_html), expected_links)
+        self.assertDictEqual(await self.parser._extract_store_links(article_html), expected_links)
 
         # Test with no store links
         no_links_html = """<div class="item">No links here</div>"""
         no_links_article = BeautifulSoup(no_links_html, 'html.parser').find('div', class_='item')
-        self.assertDictEqual(self.parser._extract_store_links(no_links_article), {})
+        self.assertDictEqual(await self.parser._extract_store_links(no_links_article), {})
 
         # Test with empty article_html
         empty_article = BeautifulSoup("", 'html.parser')
-        self.assertDictEqual(self.parser._extract_store_links(empty_article), {})
+        self.assertDictEqual(await self.parser._extract_store_links(empty_article), {})
 
 if __name__ == '__main__':
     unittest.main()

@@ -126,7 +126,7 @@ class StopGameParser(BaseParser):
                 domain = store_info.get("domain")
                 if domain and domain in href:
                     cleaned_url = self._clean_store_url(href, store_name)
-                    if cleaned_url:
+                    if cleaned_url and store_name not in stores:
                         stores[store_name] = cleaned_url
                         # Assuming only one link per store is needed
                         break 

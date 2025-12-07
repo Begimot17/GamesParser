@@ -160,6 +160,24 @@ class PikabuParser(BaseParser):
             
         return title, content, images, store_links
 
+    def _parse_tags(self, article: Tag) -> list:
+        """Parses tags from the article."""
+        tags = []
+        selector = self.SELECTORS.get("tags")
+        if selector:
+            tags = [self._clean_text(t.get_text(strip=True)) for t in article.select(selector)]
+        return tags
+
+    def _parse_stats(self, article: Tag) -> Optional[str]:
+        """Parses view stats from the article."""
+        stats = None
+        selector = self.SELECTORS.get("stats")
+        if selector:
+            elem = article.select_one(selector)
+            if elem:
+                stats = self._clean_text(elem.get_text(strip=True))
+        return stats
+
     def _parse_initial_post_data(self, article: Tag) -> Optional[Dict[str, Any]]:
         """Parses the initial post data from the article tag."""
         post_id = article.get("data-story-id")
@@ -208,6 +226,9 @@ class PikabuParser(BaseParser):
                             continue
                         images.append(src)
         
+        tags = self._parse_tags(article)
+        views = self._parse_stats(article)
+
         logger.info(f"[PikabuParser] Initial data for post {post_id}: content_len={len(content)}, images_count={len(images)}")
 
         return {
@@ -218,6 +239,8 @@ class PikabuParser(BaseParser):
             "date": date,
             "content": content,
             "images": images,
+            "tags": tags,
+            "views": views,
         }
 
     async def _parse_article(self, article: Tag, preloaded_html: Optional[str] = None) -> Optional[Post]:
@@ -233,7 +256,14 @@ class PikabuParser(BaseParser):
                 initial_data["title"], initial_data["content"], initial_data["images"], initial_data["link"], {}, preloaded_html
             )
 
-            metadata = PostMetadata(rating=initial_data["rating"], store_links=store_links, images=list(set(images)), date=initial_data["date"])
+            metadata = PostMetadata(
+                rating=initial_data["rating"], 
+                store_links=store_links, 
+                images=list(set(images)), 
+                date=initial_data["date"],
+                tags=initial_data["tags"],
+                views=initial_data["views"]
+            )
             return Post(
                 id=post_id,
                 title=title,

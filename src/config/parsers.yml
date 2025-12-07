@@ -21,6 +21,7 @@ pikabu:
     author: "a.story__user-link"
     date: "time.story__datetime"
     tags: "a.story__tag"
+    stats: "span.story__views-count" # New stats selector
     store_links: "a[href]"
   stores:
     steam:
@@ -49,7 +50,10 @@ vgtimes:
     image: "div.image_wrap.type0 img"
     rating: "div.rrating div.text"
     store_links: 'a.l_ks[target="_blank"]'
-    # Selectors for the single article page
+    # Date is now extracted from text near the link, selector might describe container/sibling relationship if needed, 
+    # but logic will handle text node. Leaving strict selector for now, parser logic will adapt.
+    
+    # Selectors for the single article page (fallback)
     content: "div.article_block.a_text"
     date: "span.post_date"
   stores:
@@ -67,12 +71,16 @@ stopgame:
   rate_limit_delay: 2
   target_urls: "https://stopgame.ru/news"
   selectors:
-    articles: ".article-item"
-    title: ".article-title a"
-    link: ".article-title a"
-    image: ".image-wrapper img"
-    content: ".article-content"
-    date: ".article-info .timestamp"
+    # Using partial class matchers for stability against hash changes
+    articles: "div[class*='_card_']"
+    title: "a[class*='_title_']"
+    link: "a[class*='_title_']"
+    image: "a[class*='_image_'] img" # Image is inside the 'image' link container
+    # Content usually requires full page fetch, but maybe there's a snippet.
+    # StopGame list items don't have much content text, usually just title.
+    content: "" 
+    # Date is found via specific logic (text node) or partially matched class
+    date: "span[class*='_date_']"
   stores:
     steam:
       domain: "store.steampowered.com"

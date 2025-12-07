@@ -88,9 +88,11 @@ class StopGameParser(BaseParser):
         return match.group(1) if match else None
 
     def _parse_date(self, date_str: str) -> Optional[datetime]:
-        """Parse date from string like '5 апреля 2025, 23:22'."""
+        """Parse date from string like '5 апреля 2025, 23:22', '4 декабря, 14:13', 'Вчера, 15:30'."""
         try:
             date_str = re.sub(r"<i.*?</i>", "", date_str).strip()
+            
+            # Normalize months
             ru_to_en = {
                 "января": "January", "февраля": "February", "марта": "March",
                 "апреля": "April", "мая": "May", "июня": "June", "июля": "July",
@@ -100,17 +102,44 @@ class StopGameParser(BaseParser):
             for ru, en in ru_to_en.items():
                 date_str = date_str.replace(ru, en)
 
-            # StopGame often uses relative dates like "сегодня в 10:00" or "вчера в 15:30"
-            # This simple parsing might not cover all cases, but it's a start.
-            # For comprehensive parsing, a more robust library or custom logic would be needed.
-            if "сегодня" in date_str:
-                date_str = date_str.replace("сегодня", datetime.now().strftime("%d %B %Y"))
-            elif "вчера" in date_str:
-                yesterday = datetime.now() - timedelta(days=1)
-                date_str = date_str.replace("вчера", yesterday.strftime("%d %B %Y"))
-
-            dt = datetime.strptime(date_str, "%d %B %Y в %H:%M")
-            return dt.replace(tzinfo=timezone(timedelta(hours=3)))
+            # Handle relative dates
+            now = datetime.now()
+            if "сегодня" in date_str.lower():
+                date_part = now.strftime("%d %B %Y")
+                time_part = re.search(r"(\d{1,2}:\d{2})", date_str).group(1)
+                date_str = f"{date_part} {time_part}"
+            elif "вчера" in date_str.lower():
+                yesterday = now - timedelta(days=1)
+                date_part = yesterday.strftime("%d %B %Y")
+                time_part = re.search(r"(\d{1,2}:\d{2})", date_str).group(1)
+                date_str = f"{date_part} {time_part}"
+            
+            # Try multiple formats
+            formats = [
+                "%d %B %Y в %H:%M",
+                "%d %B %Y, %H:%M",
+                "%d %B, %H:%M", # Missing year
+                "%d %B %Y %H:%M", # For constructed relative dates
+            ]
+            
+            dt = None
+            for fmt in formats:
+                try:
+                    dt = datetime.strptime(date_str, fmt)
+                    if "%Y" not in fmt:
+                        dt = dt.replace(year=now.year)
+                        # If date is in future (e.g. Dec 31 detected in Jan 1), subtract year ??
+                        # Assuming posts are recent. If post date > now + 1 day, maybe it's last year.
+                        # But simpler is enough for now.
+                    break
+                except ValueError:
+                    continue
+            
+            if dt:
+                return dt.replace(tzinfo=timezone(timedelta(hours=3)))
+            
+            logger.warning(f"Could not parse date string: {date_str}")
+            return None
         except Exception as e:
             logger.error(f"Error parsing date '{date_str}': {e}", exc_info=True)
             return None
@@ -188,9 +217,17 @@ class StopGameParser(BaseParser):
 
         image_elem = article_html.select_one(self.SELECTORS["image"])
         image_url = image_elem.get("src") if image_elem else None
-
+        
+        # Date parsing for StopGame using partial class match or text node
+        date = None
         date_elem = article_html.select_one(self.SELECTORS["date"])
-        date = self._parse_date(date_elem.get_text(strip=True)) if date_elem else None
+        if date_elem:
+             date = self._parse_date(date_elem.get_text(strip=True))
+        else:
+             # Fallback: Try to find date-like text in the partial class structures
+             # Based on analysis, it might be in a span with class ending in _date_...
+             # The new selector "span[class*='_date_']" should catch it.
+             pass
 
         return {
             "id": article_id,

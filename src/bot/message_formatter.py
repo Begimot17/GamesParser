@@ -92,29 +92,53 @@ class MessageFormatter:
     def format_message(self, post: Post) -> str:
         """Форматирование сообщения для отправки."""
         try:
-            # Ensure post.link is a string before escaping
+            # Header: Title linked
             title_link = f'<a href="{self.escape_html(str(post.link))}">{self.escape_html(post.title)}</a>'
-            stores_text = self._format_store_links(post)
-
-            metadata_parts = []
-            if post.metadata and post.metadata.date:
-                metadata_parts.append(self.escape_html(f"📅 {self.format_date(post.metadata.date)}")) # Escaped
-            if post.metadata and post.metadata.rating is not None:
-                metadata_parts.append(self.escape_html(f"⭐ {post.metadata.rating}")) # Escaped
-
-            # Clean and then escape the content
+            
+            # Content: Truncated
             cleaned_content = self.clean_text(post.content, final_clean=True)
             escaped_content = self.escape_html(cleaned_content)
-            content = escaped_content[:500] + "..." if len(escaped_content) > 500 else escaped_content
+            # Limit content length to avoid hitting Telegram limits (4096 chars total, keep safe buffer)
+            max_content_len = 800 
+            content_display = escaped_content[:max_content_len] + "..." if len(escaped_content) > max_content_len else escaped_content
 
+            # Meta Line: Date | Rating | Views
+            meta_parts = []
+            if post.metadata:
+                if post.metadata.date:
+                    meta_parts.append(f"📅 {self.format_date(post.metadata.date)}")
+                if post.metadata.rating is not None:
+                    meta_parts.append(f"⭐ {post.metadata.rating}")
+                if hasattr(post.metadata, 'views') and post.metadata.views:
+                     meta_parts.append(f"👁 {post.metadata.views}")
+
+            meta_line = " | ".join(meta_parts) if meta_parts else ""
+
+            # Store Links
+            stores_line = self._format_store_links(post)
+            if stores_line:
+                stores_line = f"🛒 {stores_line}"
+
+            # Tags (Hashtags)
+            tags_line = ""
+            if hasattr(post.metadata, 'tags') and post.metadata.tags:
+                 # Clean tags to be valid hashtags (no spaces, alphanumeric)
+                 clean_tags = [re.sub(r"[^\w]", "", t) for t in post.metadata.tags]
+                 tags_line = " ".join([f"#{t}" for t in clean_tags if t])
+
+            # Assemble Message
             message_parts = [
-                f"🎮 {title_link}",
-                f"🛒 {stores_text}" if stores_text else None,
-                " | ".join(metadata_parts) if metadata_parts else None,
+                f"<b>{title_link}</b>",
                 "",
-                content,
+                content_display,
+                "",
+                meta_line,
+                stores_line,
+                tags_line
             ]
+            
             return "\n".join(filter(None, message_parts))
+
         except Exception as e:
             logger.error("Error formatting message: %s", str(e), exc_info=True)
             return f"Error formatting message: {post.link}"

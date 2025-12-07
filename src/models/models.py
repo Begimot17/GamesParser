@@ -13,6 +13,8 @@ class PostMetadata(BaseModel):
     store_links: dict = {}
     images: list = []
     date: Optional[datetime] = None
+    tags: list = []
+    views: Optional[str] = None
 
     @field_validator("rating", mode="before")
     @classmethod

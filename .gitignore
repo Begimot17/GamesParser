@@ -61,3 +61,4 @@ coverage.xml
 .ipynb_checkpoints 
 news_bot.db
 test_news_bot.db
+fetched_html/

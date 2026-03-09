@@ -20,15 +20,16 @@ from src.storage.sqlite_storage import SQLiteStorage
 class PikabuParser(BaseParser):
     """Парсер для получения постов из сообщества Steam на Pikabu."""
 
-    def __init__(self):
+    def __init__(self, storage=None):
         self.config = settings.PARSERS_CONFIG.get("pikabu", {})
-        self.TARGET_URLS = self.config.get("target_urls", "").split(',') if isinstance(self.config.get("target_urls"), str) else self.config.get("target_urls", [])
         if not self.config:
             logger.warning("Pikabu configuration not found in settings! Using defaults.")
             self.TARGET_URLS = ["https://pikabu.ru/community/steam"]
-            
+        else:
+            self.TARGET_URLS = self.config.get("target_urls", "").split(',') if isinstance(self.config.get("target_urls"), str) else self.config.get("target_urls", [])
+
         super().__init__(default_base_url=self.TARGET_URLS[0] if self.TARGET_URLS else None)
-        
+
         self.REQUEST_TIMEOUT = self.config.get("request_timeout", settings.REQUEST_TIMEOUT)
         self.MAX_TEXT_LENGTH = self.config.get("max_text_length", settings.MAX_TEXT_LENGTH)
         self.VALID_IMAGE_EXTENSIONS = tuple(self.config.get("valid_image_extensions", [".jpg", ".jpeg", ".png", ".gif", ".webp"]))
@@ -37,7 +38,7 @@ class PikabuParser(BaseParser):
         self.STORE_CONFIG = self.config.get("stores", {})
 
         self.llm = LLMG4F(model_name=settings.LLM_MODEL)
-        self.storage = SQLiteStorage(settings.DB_PATH)
+        self.storage = storage or SQLiteStorage(settings.DB_PATH)
 
     def _clean_store_url(self, url: str, store_name: str) -> str:
         """Очистка и проверка URL магазина."""
@@ -281,6 +282,7 @@ class PikabuParser(BaseParser):
                 link=initial_data["link"],
                 content=content,
                 metadata=metadata,
+                source="Pikabu"
             )
         except ValidationError as e:
             logger.error(f"Validation error for post {post_id}: {e}")

@@ -9,7 +9,6 @@ import aiohttp
 import aiofiles # Added import for aiofiles
 
 from src.common.logger import logger
-from src.common.logger import logger
 from src.config.config import settings
 from src.bot.retry_handler import retry
 
@@ -116,10 +115,10 @@ class BaseParser(ABC):
         if not self.session or self.session.closed:
             self.session = aiohttp.ClientSession(headers=self.headers)
         
-        async with self.session.get(url, timeout=self.REQUEST_TIMEOUT) as response:
+        async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)) as response:
             response.raise_for_status()
             html_content = await response.text()
-            await self._save_fetched_html(html_content, self.__class__.__name__) # Save fetched HTML
+            await self._save_fetched_html(html_content, url)
             return html_content
 
     @abstractmethod

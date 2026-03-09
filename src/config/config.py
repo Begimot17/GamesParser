@@ -1,7 +1,7 @@
 """Configuration for GamesParser project."""
 
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
@@ -44,6 +44,8 @@ class Settings(BaseSettings):
 
     # Storage settings
     DB_PATH: str = "news_bot.db"
+    TEST_DB_PATH: str = "test_news_bot.db"
+    TEST_CHANNEL_ID: Optional[str] = None
     SAVE_HTML: bool = False
     HTML_DIR: str = "html_articles"
     SAVE_ALL_FETCHED_HTML: bool = True
@@ -70,12 +72,3 @@ class Settings(BaseSettings):
 # Create a global settings instance
 settings = Settings()
 settings.load_parsers_config()
-
-# Alias for backward compatibility if we want to minimize changes immediately,
-# but better to refactor usages.
-class Config:
-    pass
-
-# Map settings to Config class for easier migration (temporary hack or just do full refactor?)
-# I'll try to do full refactor. But to be safe, I can also expose attributes on Config.
-# Actually, let's stick to `settings` export and refactor imports.

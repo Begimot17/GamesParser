@@ -76,9 +76,8 @@ stopgame:
     title: "a[class*='_title_']"
     link: "a[class*='_title_']"
     image: "a[class*='_image_'] img" # Image is inside the 'image' link container
-    # Content usually requires full page fetch, but maybe there's a snippet.
-    # StopGame list items don't have much content text, usually just title.
-    content: "" 
+    # Content requires full page fetch from individual article page
+    content: "div[class*='_text_']"
     # Date is found via specific logic (text node) or partially matched class
     date: "span[class*='_date_']"
   stores:

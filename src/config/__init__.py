@@ -1,6 +1,5 @@
 """Config Package."""
 
-from .config import Config
+from .config import settings
 
-
-__all__ = ["Config"]
+__all__ = ["settings"]

@@ -100,5 +100,55 @@ class TestVGTimesParser(unittest.IsolatedAsyncioTestCase):
         empty_article = BeautifulSoup("", 'html.parser')
         self.assertDictEqual(await self.parser._extract_store_links(empty_article), {})
 
+    @patch('src.config.config.settings.PARSERS_CONFIG', {
+        'vgtimes': {
+            'request_timeout': 10,
+            'max_text_length': 1000,
+            'valid_image_extensions': ['.png', '.jpg'],
+            'rate_limit_delay': 1,
+            'target_urls': 'https://vgtimes.ru/free/',
+            'selectors': {
+                "articles": "ul.list-items > li",
+                "title": "div.item-name.type0 a:first-child",
+                "link": "div.item-name.type0 a:first-child",
+                "image": "div.image_wrap.type0 img",
+                "rating": "div.rrating div.text",
+                "store_links": 'a.l_ks[target="_blank"]',
+                "content": "div.article_text",
+                "date": "div.date",
+            },
+            'stores': {
+                'steam': {'domain': 'store.steampowered.com'},
+                'epicgames': {'domain': 'epicgames.com'},
+                'gog': {'domain': 'gog.com'}
+            }
+        }
+    })
+    async def test_clean_store_url_uses_client_timeout(self):
+        """HEAD-запрос для redirect должен использовать aiohttp.ClientTimeout."""
+        import aiohttp
+
+        captured_kwargs = {}
+
+        mock_response = unittest.mock.AsyncMock()
+        mock_response.url = "https://store.steampowered.com/app/123/"
+        mock_response.__aenter__ = unittest.mock.AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = unittest.mock.AsyncMock(return_value=False)
+
+        def fake_head(url, **kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_response
+
+        mock_session = unittest.mock.MagicMock()
+        mock_session.closed = False
+        mock_session.head = fake_head
+        self.parser.session = mock_session
+
+        await self.parser._clean_store_url("https://vgtimes.ru/go/12345", "steam")
+
+        assert "timeout" in captured_kwargs
+        assert isinstance(captured_kwargs["timeout"], aiohttp.ClientTimeout)
+
+
 if __name__ == '__main__':
     unittest.main()

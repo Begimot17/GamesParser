@@ -103,5 +103,96 @@ class TestStopGameParser(unittest.TestCase):
         empty_article = BeautifulSoup("", 'html.parser')
         self.assertDictEqual(self.parser._extract_store_links(empty_article), {})
 
+    @patch('src.config.config.settings.PARSERS_CONFIG', {
+        'stopgame': {
+            'request_timeout': 10,
+            'max_text_length': 1000,
+            'valid_image_extensions': ['.png', '.jpg'],
+            'rate_limit_delay': 1,
+            'target_urls': 'https://stopgame.ru/news',
+            'selectors': {
+                "articles": ".article-item",
+                "title": ".article-title a",
+                "link": ".article-title a",
+                "image": ".image-wrapper img",
+                "content": ".article-content",
+                "date": ".article-info .timestamp",
+            },
+            'stores': {
+                'steam': {'domain': 'store.steampowered.com'},
+                'epicgames': {'domain': 'epicgames.com'},
+                'gog': {'domain': 'gog.com'}
+            }
+        }
+    })
+    def test_parse_article_fetches_content(self):
+        """_parse_article должен загружать контент из полной страницы."""
+        import asyncio
+
+        article_html = BeautifulSoup("""
+        <div class="article-item">
+            <div class="article-title">
+                <a href="https://stopgame.ru/newsdata/12345/title">Test Article</a>
+            </div>
+            <div class="image-wrapper"><img src="https://cdn.example.com/img.jpg"></div>
+            <div class="article-info"><span class="timestamp">15 июля 2024 в 12:00</span></div>
+        </div>
+        """, 'html.parser').find('div', class_='article-item')
+
+        self.parser._fetch_article_content = AsyncMock(return_value="Full article content here")
+
+        post = asyncio.run(self.parser._parse_article(article_html))
+
+        self.assertIsNotNone(post)
+        self.assertEqual(post.content, "Full article content here")
+        self.parser._fetch_article_content.assert_called_once()
+
+    @patch('src.config.config.settings.PARSERS_CONFIG', {
+        'stopgame': {
+            'request_timeout': 10,
+            'max_text_length': 1000,
+            'valid_image_extensions': ['.png', '.jpg'],
+            'rate_limit_delay': 1,
+            'target_urls': 'https://stopgame.ru/news',
+            'selectors': {
+                "articles": ".article-item",
+                "title": ".article-title a",
+                "link": ".article-title a",
+                "image": ".image-wrapper img",
+                "content": ".article-content",
+                "date": ".article-info .timestamp",
+            },
+            'stores': {}
+        }
+    })
+    def test_process_url_skips_processed_early(self):
+        """При is_processed=True статья не должна загружаться (_fetch_article_content не вызывается)."""
+        import asyncio
+
+        self.parser.storage.is_processed = AsyncMock(return_value=True)
+        self.parser._fetch_article_content = AsyncMock(return_value="")
+
+        html = """
+        <html><body>
+        <div class="article-item">
+            <div class="article-title">
+                <a href="https://stopgame.ru/newsdata/99999/title">Already Processed</a>
+            </div>
+        </div>
+        </body></html>
+        """
+        self.parser._fetch_page = AsyncMock(return_value=html)
+
+        async def collect():
+            posts = []
+            async for post in self.parser._process_url("https://stopgame.ru/news"):
+                posts.append(post)
+            return posts
+
+        posts = asyncio.run(collect())
+        self.assertEqual(len(posts), 0)
+        self.parser._fetch_article_content.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

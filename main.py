@@ -25,11 +25,11 @@ class NewsMonitor:
             channel_id=self.settings.TELEGRAM_CHANNEL_ID
         )
 
-        # Initialize parsers
+        # Initialize parsers with shared storage
         self.parsers = [
-            PikabuParser(),
-            VGTimesParser(),
-            StopGameParser()
+            PikabuParser(storage=self.storage),
+            VGTimesParser(storage=self.storage),
+            StopGameParser(storage=self.storage),
         ]
         self.parser_manager = ParserManager(self.parsers)
 
@@ -57,7 +57,7 @@ class NewsMonitor:
 
                 logger.info(f"New post found: {post.title} ({post.link})")
                 success = await self.bot.send_message(
-                    self.bot._format_message(post),
+                    self.bot.formatter.format_message(post),
                     images=post.metadata.images if post.metadata else None
                 )
                 
@@ -84,7 +84,7 @@ class NewsMonitor:
 
                     logger.info(f"New post found: {post.title}")
                     success = await self.bot.send_message(
-                        self.bot._format_message(post),
+                        self.bot.formatter.format_message(post),
                         images=post.metadata.images if post.metadata else None
                     )
 

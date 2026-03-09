@@ -49,6 +49,7 @@ class Post(BaseModel):
     link: HttpUrl
     content: str
     metadata: PostMetadata
+    source: Optional[str] = None
 
     @field_validator("id")
     @classmethod

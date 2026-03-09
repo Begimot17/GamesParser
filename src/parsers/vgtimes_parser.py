@@ -21,12 +21,13 @@ from src.storage.sqlite_storage import SQLiteStorage
 class VGTimesParser(BaseParser):
     """Парсер для получения постов с VGTimes."""
 
-    def __init__(self):
+    def __init__(self, storage=None):
         self.config = settings.PARSERS_CONFIG.get("vgtimes", {})
-        self.TARGET_URLS = self.config.get("target_urls", "").split(',') if isinstance(self.config.get("target_urls"), str) else self.config.get("target_urls", [])
         if not self.config:
             logger.warning("VGTimes configuration not found in settings! Using defaults.")
             self.TARGET_URLS = ["https://vgtimes.ru/free/"]
+        else:
+            self.TARGET_URLS = self.config.get("target_urls", "").split(',') if isinstance(self.config.get("target_urls"), str) else self.config.get("target_urls", [])
 
         super().__init__(default_base_url=self.TARGET_URLS[0] if self.TARGET_URLS else None)
 
@@ -37,7 +38,7 @@ class VGTimesParser(BaseParser):
         self.SELECTORS = self.config.get("selectors", {})
         self.STORE_CONFIG = self.config.get("stores", {})
 
-        self.storage = SQLiteStorage(settings.DB_PATH)
+        self.storage = storage or SQLiteStorage(settings.DB_PATH)
         self.llm = LLMG4F(model_name=settings.LLM_MODEL)
 
     async def _process_url(self, target_url: str) -> AsyncIterator[Post]:
@@ -135,16 +136,16 @@ class VGTimesParser(BaseParser):
 
         if "/go/" in url:
             try:
-                # Need session here. BaseParser has self.session if inside context,
-                # but fetch_posts manages session context implicitly via _fetch_page? 
-                # No, _fetch_page creates session if missing.
-                # But here we need to make a HEAD request.
-                if not self.session or self.session.closed:
-                    self.session = aiohttp.ClientSession(headers=self.headers)
-                    
-                async with self.session.head(url, allow_redirects=True, timeout=self.REQUEST_TIMEOUT) as response:
-                    url = str(response.url)
-                    logger.debug(f"Redirected URL: {url}")
+                timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)
+                if self.session and not self.session.closed:
+                    async with self.session.head(url, allow_redirects=True, timeout=timeout) as response:
+                        url = str(response.url)
+                        logger.debug(f"Redirected URL: {url}")
+                else:
+                    async with aiohttp.ClientSession(headers=self.headers) as tmp:
+                        async with tmp.head(url, allow_redirects=True, timeout=timeout) as response:
+                            url = str(response.url)
+                            logger.debug(f"Redirected URL: {url}")
             except Exception as e:
                 logger.error(f"Could not resolve redirect for {url}: {e}")
                 return ""
@@ -245,7 +246,8 @@ class VGTimesParser(BaseParser):
                 title=title,
                 link=link,
                 content=content,
-                metadata=metadata
+                metadata=metadata,
+                source="VGTimes"
             )
 
         except Exception as e:

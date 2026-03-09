@@ -21,12 +21,13 @@ from src.storage.sqlite_storage import SQLiteStorage
 class StopGameParser(BaseParser):
     """Парсер для получения новостей с StopGame.ru."""
 
-    def __init__(self):
+    def __init__(self, storage=None):
         self.config = settings.PARSERS_CONFIG.get("stopgame", {})
-        self.TARGET_URLS = self.config.get("target_urls", "").split(',') if isinstance(self.config.get("target_urls"), str) else self.config.get("target_urls", [])
         if not self.config:
             logger.warning("StopGame configuration not found in settings! Using defaults.")
             self.TARGET_URLS = ["https://stopgame.ru/news"]
+        else:
+            self.TARGET_URLS = self.config.get("target_urls", "").split(',') if isinstance(self.config.get("target_urls"), str) else self.config.get("target_urls", [])
 
         super().__init__(default_base_url=self.TARGET_URLS[0] if self.TARGET_URLS else None)
 
@@ -37,7 +38,7 @@ class StopGameParser(BaseParser):
         self.SELECTORS = self.config.get("selectors", {})
         self.STORE_CONFIG = self.config.get("stores", {})
 
-        self.storage = SQLiteStorage(settings.DB_PATH)
+        self.storage = storage or SQLiteStorage(settings.DB_PATH)
         self.llm = LLMG4F(model_name=settings.LLM_MODEL)
 
     async def _process_url(self, target_url: str) -> AsyncIterator[Post]:
@@ -55,12 +56,16 @@ class StopGameParser(BaseParser):
 
             for article in articles:
                 try:
-                    post = await self._parse_article(article, preloaded_html=html)
+                    # Early ID check before fetching full article
+                    initial_data = self._parse_initial_post_data(article)
+                    if not initial_data:
+                        continue
+                    if await self.storage.is_processed(initial_data["id"]):
+                        logger.debug(f"[StopGameParser] Post {initial_data['id']} already processed, skipping")
+                        continue
+
+                    post = await self._parse_article(article)
                     if post:
-                        if await self.storage.is_processed(post.id):
-                            logger.debug(f"[StopGameParser] Post {post.id} already processed, skipping")
-                            continue
-                            
                         logger.info(f"[StopGameParser] Yielding post {post.id}")
                         yield post
                 except Exception as e:
@@ -182,9 +187,9 @@ class StopGameParser(BaseParser):
         
         return url
 
-    async def _update_post_with_llm_data(self, title: str, content: str, images: list, link: str, store_links: dict, preloaded_html: Optional[str] = None) -> tuple[str, str, list, dict]:
+    async def _update_post_with_llm_data(self, title: str, content: str, images: list, link: str, store_links: dict) -> tuple[str, str, list, dict]:
         """Updates post data with information extracted by LLM."""
-        page_text = await self._fetch_full_page_text(link, preloaded_html=preloaded_html)
+        page_text = await self._fetch_full_page_text(link)
         if page_text:
             llm_data = await self.llm.extract_article_info(page_text, link)
 
@@ -232,7 +237,28 @@ class StopGameParser(BaseParser):
             "date": date,
         }
 
-    async def _parse_article(self, article_html: Tag, preloaded_html: Optional[str] = None) -> Optional[Post]:
+    async def _fetch_article_content(self, url: str) -> str:
+        """Загружает полную страницу статьи и извлекает текст контента."""
+        try:
+            html = await self._fetch_page(url)
+            if not html:
+                return ""
+            soup = BeautifulSoup(html, "html.parser")
+            content_selector = self.SELECTORS.get("content", "")
+            if content_selector:
+                content_elem = soup.select_one(content_selector)
+                if content_elem:
+                    return self._clean_text(content_elem.get_text(" ", strip=True))
+            # Fallback: extract main text
+            for element in soup(["script", "style", "nav", "header", "footer", "aside"]):
+                element.decompose()
+            main = soup.select_one("article, main, .content")
+            return self._clean_text(main.get_text(" ", strip=True) if main else "")
+        except Exception as e:
+            logger.error(f"Error fetching article content from {url}: {e}", exc_info=True)
+            return ""
+
+    async def _parse_article(self, article_html: Tag) -> Optional[Post]:
         """Парсинг одной статьи."""
         initial_data = self._parse_initial_post_data(article_html)
         if not initial_data:
@@ -241,15 +267,20 @@ class StopGameParser(BaseParser):
         post_id = initial_data["id"]
         try:
             title = initial_data["title"]
-            content = ""  # Let LLM fill it
             images = [initial_data["image_url"]] if initial_data["image_url"] else []
             store_links = self._extract_store_links(article_html)
+
+            # Fetch article content from the full page
+            content = await self._fetch_article_content(initial_data["link"])
 
             # Use LLM to enrich post data only if enabled
             if settings.ENABLE_LLM:
                 title, content, images, store_links = await self._update_post_with_llm_data(
-                    title, content, images, initial_data["link"], store_links, preloaded_html
+                    title, content, images, initial_data["link"], store_links
                 )
+
+            if len(content) > self.MAX_TEXT_LENGTH:
+                content = content[:self.MAX_TEXT_LENGTH] + "..."
 
             metadata = PostMetadata(
                 store_links=store_links,
@@ -263,6 +294,7 @@ class StopGameParser(BaseParser):
                 link=initial_data["link"],
                 content=content,
                 metadata=metadata,
+                source="StopGame"
             )
         except ValidationError as e:
             logger.error(f"Validation error for article {initial_data.get('link')}: {e}")
@@ -271,20 +303,17 @@ class StopGameParser(BaseParser):
             logger.error(f"Error parsing article {initial_data.get('link')}: {e}", exc_info=True)
             return None
 
-    async def _fetch_full_page_text(self, post_link: str, preloaded_html: Optional[str] = None) -> str:
+    async def _fetch_full_page_text(self, post_link: str) -> str:
         """Fetch the full page text for LLM processing."""
         try:
-            if preloaded_html:
-                html = preloaded_html
-            else:
-                html = await self._fetch_page(post_link)
-            
+            html = await self._fetch_page(post_link)
             if not html:
                 return ""
             soup = BeautifulSoup(html, "html.parser")
             for element in soup(["script", "style", "nav", "header", "footer", "aside"]):
                 element.decompose()
-            main_content = soup.select_one(self.SELECTORS["content"])
+            content_selector = self.SELECTORS.get("content", "")
+            main_content = soup.select_one(content_selector) if content_selector else None
             return main_content.get_text(" ", strip=True) if main_content else ""
         except Exception as e:
             logger.error(f"Error fetching page text from {post_link}: {e}", exc_info=True)

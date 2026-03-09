@@ -29,7 +29,7 @@ class NewsMonitor:
         self.parsers = [
             PikabuParser(storage=self.storage),
             VGTimesParser(storage=self.storage),
-            StopGameParser(storage=self.storage),
+            # StopGameParser(storage=self.storage),  # временно отключён
         ]
         self.parser_manager = ParserManager(self.parsers)
 

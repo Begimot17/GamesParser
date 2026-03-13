@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import sys
-from typing import List
 
 from src.bot.bot import TelegramNewsBot
 from src.common.logger import setup_logger, logger
@@ -18,20 +17,20 @@ class NewsMonitor:
 
     def __init__(self):
         self.settings = settings
-        
+
         self.storage = SQLiteStorage(self.settings.DB_PATH)
         self.bot = TelegramNewsBot(
             token=self.settings.TELEGRAM_BOT_TOKEN,
             channel_id=self.settings.TELEGRAM_CHANNEL_ID
         )
 
-        # Initialize parsers with shared storage
-        self.parsers = [
-            PikabuParser(storage=self.storage),
-            VGTimesParser(storage=self.storage),
-            # StopGameParser(storage=self.storage),  # временно отключён
+        parsers = [
+            PikabuParser(),
+            VGTimesParser(),
+            # StopGameParser(),
         ]
-        self.parser_manager = ParserManager(self.parsers)
+        self.parsers = parsers
+        self.parser_manager = ParserManager(parsers=parsers, storage=self.storage)
 
     async def run(self, use_streaming: bool = True):
         """Runs the monitoring loop."""
@@ -60,13 +59,13 @@ class NewsMonitor:
                     self.bot.formatter.format_message(post),
                     images=post.metadata.images if post.metadata else None
                 )
-                
+
                 if success:
                     await self.storage.mark_as_processed(post.id)
                     logger.info(f"Post {post.id} processed and sent.")
                 else:
                     logger.error(f"Failed to send post {post.id}")
-                
+
                 await asyncio.sleep(self.settings.STREAM_POST_PROCESSING_DELAY)
 
             except Exception as e:
@@ -77,8 +76,8 @@ class NewsMonitor:
         logger.info("Starting polling mode...")
         while True:
             try:
-                 posts = await self.parser_manager.fetch_all_posts()
-                 for post in posts:
+                posts = await self.parser_manager.fetch_all_posts()
+                for post in posts:
                     if await self.storage.is_processed(post.id):
                         continue
 
@@ -90,11 +89,11 @@ class NewsMonitor:
 
                     if success:
                         await self.storage.mark_as_processed(post.id)
-                    
+
                     await asyncio.sleep(self.settings.POST_PROCESSING_DELAY)
-                 
-                 logger.info(f"Sleeping for {self.settings.CHECK_INTERVAL} seconds...")
-                 await asyncio.sleep(self.settings.CHECK_INTERVAL)
+
+                logger.info(f"Sleeping for {self.settings.CHECK_INTERVAL} seconds...")
+                await asyncio.sleep(self.settings.CHECK_INTERVAL)
 
             except Exception as e:
                 logger.error(f"Error in polling loop: {e}", exc_info=True)

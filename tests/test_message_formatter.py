@@ -1,8 +1,10 @@
 """Tests for MessageFormatter."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
-from datetime import datetime, timezone, timedelta
-from src.bot.message_formatter import MessageFormatter, STORE_EMOJIS, STORE_DISPLAY_NAMES
+
+from src.bot.message_formatter import STORE_DISPLAY_NAMES, STORE_EMOJIS, MessageFormatter
 from src.models.models import Post, PostMetadata
 
 

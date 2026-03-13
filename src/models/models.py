@@ -10,11 +10,12 @@ class PostMetadata(BaseModel):
     """Мета-данные поста."""
 
     rating: Optional[int] = None
-    store_links: dict = {}
+    store_links: dict[str, list[str]] = {}
     images: list = []
     date: Optional[datetime] = None
     tags: list = []
     views: Optional[str] = None
+    game_info: dict = {}  # store_name -> GameInfo.to_dict() or list thereof
 
     @field_validator("rating", mode="before")
     @classmethod
@@ -28,17 +29,27 @@ class PostMetadata(BaseModel):
                 return int(v)
         return None
 
-    @field_validator("store_links")
+    @field_validator("store_links", mode="before")
     @classmethod
-    def clean_store_links(cls, v: dict) -> dict:
-        """Очистка ссылок на магазины."""
-        return {k: v for k, v in v.items() if k and v}
+    def clean_store_links(cls, v: dict) -> dict[str, list[str]]:
+        """Нормализует store_links: значения всегда list[str], пустые убираются."""
+        result: dict[str, list[str]] = {}
+        for k, val in v.items():
+            if not k or not val:
+                continue
+            if isinstance(val, list):
+                cleaned = [u for u in val if u]
+                if cleaned:
+                    result[k] = cleaned
+            else:
+                result[k] = [val]
+        return result
 
     @field_validator("images")
     @classmethod
     def clean_images(cls, v: list) -> list:
         """Очистка списка изображений."""
-        return list(set(v))  # Удаляем дубликаты
+        return list(set(v))
 
 
 class Post(BaseModel):

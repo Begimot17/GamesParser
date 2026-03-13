@@ -1,15 +1,15 @@
 import asyncio
-import os
 from pathlib import Path
-from typing import Type
+from typing import Optional
+
+from bs4 import BeautifulSoup
 
 from src.common.logger import logger
-from src.config.config import Config
-from src.parsers.pikabu_parser import PikabuParser
-from src.parsers.vgtimes_parser import VGTimesParser
-from src.parsers.stopgame_parser import StopGameParser
-from src.parsers.utils.base_parser import BaseParser
+from src.config.config import settings
 from src.models.models import Post
+from src.parsers.pikabu_parser import PikabuParser
+from src.parsers.stopgame_parser import StopGameParser
+from src.parsers.vgtimes_parser import VGTimesParser
 
 
 class HtmlReparser:
@@ -19,7 +19,7 @@ class HtmlReparser:
     """
 
     def __init__(self):
-        self.html_dir = Path(Config.HTML_DIR)
+        self.html_dir = Path(settings.HTML_DIR)
         self.parsers = {
             "pikabu": PikabuParser,
             "vgtimes": VGTimesParser,
@@ -58,17 +58,12 @@ class HtmlReparser:
 
         # Instantiate the parser and process the HTML
         async with parser_class() as parser:
-            # Find the article tag within the HTML
             soup = BeautifulSoup(html_content, "html.parser")
             article_tag = soup.select_one(parser.SELECTORS["articles"])
-            
+
             if not article_tag:
                 logger.error(f"Could not find article tag using selector '{parser.SELECTORS['articles']}' in {filename}")
                 return None
-            
-            # Temporarily disable storage processing check for re-parsing
-            original_is_processed = parser.storage.is_processed
-            parser.storage.is_processed = lambda x: False
 
             try:
                 post = await parser._parse_article(article_tag, preloaded_html=html_content)
@@ -80,8 +75,6 @@ class HtmlReparser:
             except Exception as e:
                 logger.error(f"Error during re-parsing {filename} with {parser_name}: {e}", exc_info=True)
                 return None
-            finally:
-                parser.storage.is_processed = original_is_processed # Restore original method
 
     async def list_saved_html_files(self) -> list[str]:
         """Lists all saved HTML files."""
@@ -104,7 +97,7 @@ class HtmlReparser:
         while True:
             try:
                 file_choice = input("Enter the number of the file to re-parse (or 'q' to quit): ")
-                if file_choice.lower() == 'q':
+                if file_choice.lower() == "q":
                     break
                 file_index = int(file_choice) - 1
                 if 0 <= file_index < len(files):
@@ -114,18 +107,18 @@ class HtmlReparser:
                     print("Invalid file number. Please try again.")
             except ValueError:
                 print("Invalid input. Please enter a number or 'q'.")
-        
-        if file_choice.lower() == 'q':
+
+        if file_choice.lower() == "q":
             return
 
         print("\nAvailable Parsers:")
         for i, parser_name in enumerate(self.parsers.keys()):
             print(f"{i+1}. {parser_name}")
-        
+
         while True:
             try:
                 parser_choice = input("Enter the number of the parser to use (or 'q' to quit): ")
-                if parser_choice.lower() == 'q':
+                if parser_choice.lower() == "q":
                     return
                 parser_index = int(parser_choice) - 1
                 parser_names = list(self.parsers.keys())

@@ -1,33 +1,34 @@
 """VGTimes parser for GamesParser project."""
 
-import asyncio
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Optional, AsyncIterator, Dict, Any
-from urllib.parse import urljoin
+from typing import AsyncGenerator, AsyncIterator, Optional
+from urllib.parse import unquote, urljoin, urlparse
 
-import aiohttp
 from bs4 import BeautifulSoup, Tag
-from pydantic import ValidationError
 
 from src.common.logger import logger
 from src.config.config import settings
 from src.models.models import Post, PostMetadata
 from src.parsers.utils.base_parser import BaseParser
 from src.services.llm_g4f import LLMG4F
-from src.storage.sqlite_storage import SQLiteStorage
+from src.services.price_service import PriceService
 
 
 class VGTimesParser(BaseParser):
     """Парсер для получения постов с VGTimes."""
 
-    def __init__(self, storage=None):
+    def __init__(self):
         self.config = settings.PARSERS_CONFIG.get("vgtimes", {})
         if not self.config:
             logger.warning("VGTimes configuration not found in settings! Using defaults.")
             self.TARGET_URLS = ["https://vgtimes.ru/free/"]
         else:
-            self.TARGET_URLS = self.config.get("target_urls", "").split(',') if isinstance(self.config.get("target_urls"), str) else self.config.get("target_urls", [])
+            self.TARGET_URLS = (
+                self.config.get("target_urls", "").split(",")
+                if isinstance(self.config.get("target_urls"), str)
+                else self.config.get("target_urls", [])
+            )
 
         super().__init__(default_base_url=self.TARGET_URLS[0] if self.TARGET_URLS else None)
 
@@ -38,8 +39,38 @@ class VGTimesParser(BaseParser):
         self.SELECTORS = self.config.get("selectors", {})
         self.STORE_CONFIG = self.config.get("stores", {})
 
-        self.storage = storage or SQLiteStorage(settings.DB_PATH)
         self.llm = LLMG4F(model_name=settings.LLM_MODEL)
+        self.price_service = PriceService()
+
+    def _clean_store_url(self, url: str, store_name: str) -> str:
+        """Очистка и проверка URL магазина с поддержкой /go/ редиректов VGTimes."""
+        if not url:
+            return ""
+
+        if "/go/" in url:
+            parsed = urlparse(url)
+            if parsed.query:
+                decoded = unquote(parsed.query)
+                if decoded.startswith("http"):
+                    url = decoded.split("&")[0]
+                    logger.debug(f"Decoded go-URL: {url}")
+
+        return super()._clean_store_url(url, store_name)
+
+    def _extract_store_links(self, article_html: Tag) -> dict:
+        """Extract store links from article."""
+        stores: dict = {}
+        link_elements = article_html.select(self.SELECTORS.get("store_links", ""))
+        for link in link_elements:
+            href = link.get("href", "")
+            for store_name, store_info in self.STORE_CONFIG.items():
+                domain = store_info.get("domain")
+                if domain and domain in href:
+                    cleaned_url = self._clean_store_url(href, store_name)
+                    if cleaned_url:
+                        stores[store_name] = cleaned_url
+                        break
+        return stores
 
     async def _process_url(self, target_url: str) -> AsyncIterator[Post]:
         """Processes a single URL and yields posts."""
@@ -58,10 +89,6 @@ class VGTimesParser(BaseParser):
                 try:
                     post = await self._parse_article(article)
                     if post:
-                        if await self.storage.is_processed(post.id):
-                            logger.debug(f"[VGTimesParser] Post {post.id} already processed, skipping")
-                            continue
-                            
                         logger.info(f"[VGTimesParser] Yielding post {post.id}")
                         yield post
                 except Exception as e:
@@ -71,10 +98,10 @@ class VGTimesParser(BaseParser):
             if html:
                 self._save_html_on_error(html, target_url)
 
-    async def fetch_posts(self, url: str = None) -> list[Post]:
+    async def fetch_posts(self, url: Optional[str] = None) -> list[Post]:
         """Fetch and parse posts from VGTimes."""
         logger.info("[VGTimesParser] Starting fetch_posts...")
-        all_posts = []
+        all_posts: list[Post] = []
         urls = [url] if url else self.TARGET_URLS
 
         for target_url in urls:
@@ -83,7 +110,7 @@ class VGTimesParser(BaseParser):
         logger.info(f"[VGTimesParser] fetch_posts completed. Total posts: {len(all_posts)}")
         return all_posts
 
-    async def stream_posts(self) -> AsyncIterator[Post]:
+    async def stream_posts(self) -> AsyncGenerator[Post, None]:
         """Генератор для потокового получения статей по мере их парсинга."""
         logger.info("[VGTimesParser] Starting stream_posts...")
         for target_url in self.TARGET_URLS:
@@ -129,57 +156,6 @@ class VGTimesParser(BaseParser):
             logger.error(f"Error parsing date '{date_str}': {e}", exc_info=True)
             return None
 
-    async def _clean_store_url(self, url: str, store_name: str) -> str:
-        """Очистка и проверка URL магазина, включая обработку редиректов."""
-        if not url:
-            return ""
-
-        if "/go/" in url:
-            try:
-                timeout = aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)
-                if self.session and not self.session.closed:
-                    async with self.session.head(url, allow_redirects=True, timeout=timeout) as response:
-                        url = str(response.url)
-                        logger.debug(f"Redirected URL: {url}")
-                else:
-                    async with aiohttp.ClientSession(headers=self.headers) as tmp:
-                        async with tmp.head(url, allow_redirects=True, timeout=timeout) as response:
-                            url = str(response.url)
-                            logger.debug(f"Redirected URL: {url}")
-            except Exception as e:
-                logger.error(f"Could not resolve redirect for {url}: {e}")
-                return ""
-
-        store_info = self.STORE_CONFIG.get(store_name, {})
-        domain = store_info.get("domain")
-        validation_regex = store_info.get("validation_regex")
-
-        if not domain or domain not in url:
-            return ""
-
-        url = self._normalize_url(url, base_url=self.TARGET_URLS[0])
-        url = url.split("?")[0].split("#")[0]
-
-        if validation_regex and not re.search(validation_regex, url):
-            return ""
-        
-        return url
-
-    async def _extract_store_links(self, article_html: Tag) -> dict:
-        """Extract store links from article."""
-        stores: dict = {}
-        link_elements = article_html.select(self.SELECTORS.get("store_links", ""))
-        for link in link_elements:
-            href = link.get("href", "")
-            for store_name, store_info in self.STORE_CONFIG.items():
-                domain = store_info.get("domain")
-                if domain and domain in href:
-                    cleaned_url = await self._clean_store_url(href, store_name)
-                    if cleaned_url:
-                        stores[store_name] = cleaned_url
-                        break
-        return stores
-
     async def _parse_article(self, article_html: Tag) -> Optional[Post]:
         """Парсинг одной статьи со страницы списка."""
         link_elem = article_html.select_one(self.SELECTORS["link"])
@@ -209,36 +185,46 @@ class VGTimesParser(BaseParser):
         image_url = image_elem.get("data-src") if image_elem else None
         if not image_url:
             image_url = image_elem.get("src") if image_elem else None
-            
+
         rating_elem = article_html.select_one(self.SELECTORS["rating"])
         rating = rating_elem.get_text(strip=True) if rating_elem else None
 
         try:
-            # Fetch the full article page to get content and date
             full_article_html = await self._fetch_page(link)
             soup = BeautifulSoup(full_article_html, "html.parser")
 
             content_elem = soup.select_one(self.SELECTORS["content"])
             content = content_elem.get_text(" ", strip=True) if content_elem else ""
-            
+
             date_elem = soup.select_one(self.SELECTORS["date"])
             raw_date_text = date_elem.get_text(strip=True) if date_elem else ""
             date = self._parse_date(raw_date_text) if raw_date_text else None
 
-            store_links = await self._extract_store_links(article_html) # Links are usually on list page too
+            store_links = self._extract_store_links(article_html)
 
-            # Clean content using BaseParser method if available or implement one
             content = self._clean_text(content)
-            
-            # Truncate content
+
             if len(content) > self.MAX_TEXT_LENGTH:
                 content = content[:self.MAX_TEXT_LENGTH] + "..."
+
+            game_info_raw = {}
+            if store_links:
+                try:
+                    infos = await self.price_service.get_all_info(store_links)
+                    game_info_raw = {
+                        store: (info.to_dict() if info and not isinstance(info, list) else
+                                [i.to_dict() if i else None for i in info] if isinstance(info, list) else None)
+                        for store, info in infos.items()
+                    }
+                except Exception as e:
+                    logger.warning("[VGTimesParser] Failed to fetch game info: %s", e)
 
             metadata = PostMetadata(
                 rating=rating,
                 store_links=store_links,
                 images=[self._normalize_url(image_url)] if image_url else [],
-                date=date
+                date=date,
+                game_info=game_info_raw,
             )
 
             return Post(
@@ -247,7 +233,7 @@ class VGTimesParser(BaseParser):
                 link=link,
                 content=content,
                 metadata=metadata,
-                source="VGTimes"
+                source="VGTimes",
             )
 
         except Exception as e:

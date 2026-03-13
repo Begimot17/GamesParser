@@ -2,32 +2,33 @@ import asyncio
 import os
 import re
 from abc import ABC, abstractmethod
-from typing import Optional
-from urllib.parse import quote, urlparse, urljoin
+from typing import AsyncGenerator, Optional, Self
+from urllib.parse import quote, urljoin, urlparse
 
+import aiofiles
 import aiohttp
-import aiofiles # Added import for aiofiles
 
-from src.common.logger import logger
-from src.config.config import settings
 from src.bot.retry_handler import retry
+from src.common.logger import logger
+from src.config.config import RATE_LIMIT_DELAY, settings
 
 
 class BaseParser(ABC):
     REQUEST_TIMEOUT: int = settings.REQUEST_TIMEOUT
-    RATE_LIMIT_DELAY: int = 2
+    RATE_LIMIT_DELAY: float = RATE_LIMIT_DELAY
+    STORE_CONFIG: dict = {}
 
     def __init__(self, default_base_url: Optional[str] = None):
         self.headers = {"User-Agent": settings.USER_AGENT}
-        self.last_request_time = 0
-        self.session = None
+        self.last_request_time: float = 0.0
+        self.session: Optional[aiohttp.ClientSession] = None
         self.default_base_url = default_base_url
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         self.session = aiohttp.ClientSession(headers=self.headers)
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         if self.session:
             await self.session.close()
 
@@ -51,8 +52,7 @@ class BaseParser(ABC):
         """Нормализация URL."""
         if not url:
             return ""
-        
-        # Use instance's default_base_url if base_url is not provided
+
         effective_base_url = base_url if base_url is not None else self.default_base_url
 
         try:
@@ -70,6 +70,35 @@ class BaseParser(ABC):
             logger.error(f"Ошибка при нормализации URL {url}: {e}")
             return ""
 
+    def _clean_store_url(self, url: str, store_name: str) -> str:
+        """Очистка и проверка URL магазина."""
+        if not url:
+            return ""
+
+        store_info = self.STORE_CONFIG.get(store_name, {})
+        domain = store_info.get("domain")
+        validation_regex = store_info.get("validation_regex")
+
+        if not domain or domain not in url:
+            return ""
+
+        url = self._normalize_url(url)
+        url = url.split("?")[0].split("#")[0]
+
+        if validation_regex and not re.search(validation_regex, url):
+            return ""
+
+        # itch.io: only accept subdomain game URLs (username.itch.io/game-slug)
+        if store_name == "itch":
+            p = urlparse(url)
+            netloc = p.netloc.lower()
+            if netloc == "itch.io" or not netloc.endswith(".itch.io"):
+                return ""
+            if not p.path.strip("/"):
+                return ""
+
+        return url
+
     def _save_html_on_error(self, html: str, url: str) -> None:
         """Saves the HTML content to a file on parsing error."""
         if not settings.SAVE_HTML:
@@ -77,11 +106,10 @@ class BaseParser(ABC):
 
         if not os.path.exists(settings.HTML_DIR):
             os.makedirs(settings.HTML_DIR)
-        
-        # Sanitize the URL to create a valid filename
+
         filename = f"{quote(url, safe='')}.html"
         filepath = os.path.join(settings.HTML_DIR, filename)
-        
+
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(html)
@@ -98,10 +126,10 @@ class BaseParser(ABC):
         if not os.path.exists(settings.FETCHED_HTML_DIR):
             logger.info(f"Creating directory for fetched HTML: {settings.FETCHED_HTML_DIR}")
             os.makedirs(settings.FETCHED_HTML_DIR)
-        
+
         filename = f"{quote(url, safe='')}.html"
         filepath = os.path.join(settings.FETCHED_HTML_DIR, filename)
-        
+
         try:
             async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
                 await f.write(html_content)
@@ -114,7 +142,7 @@ class BaseParser(ABC):
         """Выполнение HTTP запроса с повторными попытками."""
         if not self.session or self.session.closed:
             self.session = aiohttp.ClientSession(headers=self.headers)
-        
+
         async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT)) as response:
             response.raise_for_status()
             html_content = await response.text()
@@ -123,8 +151,8 @@ class BaseParser(ABC):
 
     @abstractmethod
     async def fetch_posts(self) -> list:
-        """Получить все посты сразу (старый метод)."""
+        """Получить все посты сразу."""
 
     @abstractmethod
-    async def stream_posts(self):
+    async def stream_posts(self) -> AsyncGenerator:
         """Генератор для потокового получения постов по мере их парсинга."""

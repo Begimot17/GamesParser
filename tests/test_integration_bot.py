@@ -9,8 +9,9 @@ Run:
 """
 
 import asyncio
+from datetime import datetime, timedelta, timezone
+
 import pytest
-from datetime import datetime, timezone, timedelta
 
 from src.bot.bot import TelegramNewsBot
 from src.config.config import settings

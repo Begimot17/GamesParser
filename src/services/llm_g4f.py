@@ -20,9 +20,9 @@ class LLMG4F(LLMInterface):
 
         logger.info(f"Sending request to LLM with model {self.model}")
         response = await self.client.chat.completions.create(
-            model=self.model, 
-            messages=messages, 
-            web_search=False
+            model=self.model,
+            messages=messages,
+            web_search=False,
         )
         response_text = response.choices[0].message.content
         logger.info(f"LLM response: {response_text[:200]}...")
@@ -62,12 +62,13 @@ Article text for analysis:"""
 
         messages = [{"role": "system", "content": prompt}, {"role": "user", "content": page_text[:8000]}]
 
+        response_text = ""
         try:
             logger.info(f"Extracting article info from {url} using {self.model}")
             response = await self.client.chat.completions.create(
-                model=self.model, 
-                messages=messages, 
-                web_search=False
+                model=self.model,
+                messages=messages,
+                web_search=False,
             )
             response_text = response.choices[0].message.content.strip()
             logger.debug(f"LLM raw response for {url}: {response_text}")
@@ -90,7 +91,10 @@ Article text for analysis:"""
             logger.error(f"JSON decode error for {url}: {e}. Response: {response_text}")
             return self._default_error_response(f"JSON decode error: {e}")
         except Exception as e:
-            logger.error(f"Error extracting article info for {url}: {e}", exc_info=True)
+            logger.error(
+                f"Error extracting article info for {url}: {e}. Response: {response_text!r}",
+                exc_info=True,
+            )
             return self._default_error_response(str(e))
 
     def _default_error_response(self, error_message: str) -> dict:

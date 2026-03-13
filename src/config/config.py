@@ -1,18 +1,19 @@
 """Configuration for GamesParser project."""
 
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, Optional
+
 import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+
 
 class Settings(BaseSettings):
     """Application settings using Pydantic."""
-    
+
     model_config = SettingsConfigDict(
-        env_file=".env", 
+        env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore"
+        extra="ignore",
     )
 
     # Base directory
@@ -72,3 +73,10 @@ class Settings(BaseSettings):
 # Create a global settings instance
 settings = Settings()
 settings.load_parsers_config()
+
+# Module-level constants (Telegram limits and bot defaults)
+GAMES_PARSER_STR: str = "GamesParser"
+MAX_MESSAGE_LENGTH: int = 4096
+MAX_CAPTION_LENGTH: int = 1024
+MAX_MEDIA_GROUP_SIZE: int = 10
+RATE_LIMIT_DELAY: float = 2.0

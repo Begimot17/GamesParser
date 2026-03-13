@@ -8,6 +8,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from src.models.models import Post
+from src.services.price_service import GameInfo
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,6 @@ class MessageFormatter:
 
     def clean_url(self, url: str) -> str:
         """Очистка URL от реферальных параметров и валидация."""
-        # Ensure url is a string before parsing
         url_str = str(url) if not isinstance(url, str) else url
         if not url_str:
             return ""
@@ -55,7 +55,6 @@ class MessageFormatter:
         text = re.sub(r"https?://(?:store\.)?epicgames\.com/\S+", "", text)
         text = re.sub(r"https?://(?:store\.)?gog\.com/\S+", "", text)
         text = re.sub(r"https?://(?:store\.)?itch\.io/\S+", "", text)
-        # Removed: text = re.sub(r"_+", "", text) # This might be causing issues with Telegram's HTML parsing
 
         if final_clean:
             lines = [line.strip() for line in text.splitlines()]
@@ -77,31 +76,137 @@ class MessageFormatter:
 
     def escape_html(self, text: str) -> str:
         """Экранирует специальные HTML-символы."""
-        # Ensure text is a string before escaping
         text_str = str(text) if not isinstance(text, str) else text
         return html.escape(text_str)
 
     def to_plain_text(self, html_text: str) -> str:
         """Converts HTML text to plain text by removing tags and unescaping entities."""
-        # Remove HTML tags
-        clean = re.compile('<.*?>')
-        plain_text = re.sub(clean, '', html_text)
-        # Unescape HTML entities
+        plain_text = re.sub(re.compile("<.*?>"), "", html_text)
         return html.unescape(plain_text)
 
     def format_date(self, dt: Optional[datetime]) -> Optional[str]:
         """Форматирует дату в строку."""
         return dt.strftime("%d.%m.%Y %H:%M") if dt else None
 
+    # ── Game info helpers ─────────────────────────────────────────────────
+
+    def _game_name_from_url(self, url: str) -> Optional[str]:
+        """Extract a human-readable game name from a store URL slug.
+
+        Examples:
+          ravenhome.itch.io/liminal-lane  → "Liminal Lane"
+          store.steampowered.com/app/255710/Cities_Skylines/ → "Cities Skylines"
+        """
+        try:
+            parsed = urlparse(url)
+            path = parsed.path.strip("/")
+            if not path:
+                return None
+            # Take the last non-empty path segment
+            segment = [p for p in path.split("/") if p][-1]
+            # Replace hyphens and underscores with spaces, title-case
+            name = segment.replace("-", " ").replace("_", " ").title()
+            return name if name else None
+        except Exception:
+            return None
+
+    def _load_game_info(self, raw: Optional[dict]) -> Optional[GameInfo]:
+        """Restore GameInfo from a stored dict (or None)."""
+        if not raw or not isinstance(raw, dict):
+            return None
+        return GameInfo.from_dict(raw)
+
+    def _format_game_info_line(self, info: Optional[GameInfo]) -> str:
+        """Return a compact summary string for one GameInfo (price + genre + mc + dev)."""
+        if not info:
+            return ""
+        parts = []
+        price_str = info.format_price()
+        if price_str:
+            parts.append(price_str)
+        if info.genre:
+            parts.append(f"🎭 {self.escape_html(info.genre)}")
+        if info.metacritic is not None:
+            parts.append(f"📊 Metacritic: {info.metacritic}")
+        if info.developer:
+            parts.append(f"👾 {self.escape_html(info.developer)}")
+        return " | ".join(parts)
+
+    def _format_one_store_entry(self, store: str, url: str, info: Optional[GameInfo], label: str) -> str:
+        """Format one store entry line.
+
+        For Steam/EGS with game info: plain text game name + info (no hyperlink).
+        For other stores or missing info: hyperlink to store.
+        """
+        emoji = STORE_EMOJIS.get(store.lower(), "🛒")
+        clean = self.clean_url(str(url))
+        if not clean:
+            return ""
+
+        info_line = self._format_game_info_line(info)
+
+        display_name = STORE_DISPLAY_NAMES.get(store.lower(), store)
+
+        # For itch.io: extract game name from URL slug (username.itch.io/game-slug)
+        if store.lower() == "itch":
+            slug_name = self._game_name_from_url(clean)
+            link_text = self.escape_html(slug_name) if slug_name else self.escape_html(display_name)
+        else:
+            link_text = self.escape_html(display_name)
+
+        link_html = f'{emoji} <a href="{self.escape_html(clean)}">{link_text}</a>'
+
+        # For Steam/EGS with a known game name — add it as plain text after the store link
+        if info and store.lower() in ("steam", "epicgames") and info.name:
+            game_name = self.escape_html(info.name)
+            if info_line:
+                return f"{link_html} — {game_name} — {info_line}"
+            return f"{link_html} — {game_name}"
+
+        if info_line:
+            return f"{link_html} — {info_line}"
+        return link_html
+
+    # ── Store section formatting ──────────────────────────────────────────
+
     def _format_store_links(self, post: Post) -> str:
-        store_links = []
-        if post.metadata and post.metadata.store_links:
-            for store, url in post.metadata.store_links.items():
-                clean_url = self.clean_url(str(url))
-                emoji = STORE_EMOJIS.get(store.lower(), "🛒")
-                display_name = STORE_DISPLAY_NAMES.get(store.lower(), store)
-                store_links.append(f'{emoji} <a href="{self.escape_html(clean_url)}">{self.escape_html(display_name)}</a>')
-        return " | ".join(store_links) if store_links else ""
+        """Format store links section, including prices and game info.
+
+        Single game  → inline (joined by ' | ')
+        Bundle       → one line per game
+        """
+        if not post.metadata or not post.metadata.store_links:
+            return ""
+
+        store_links = post.metadata.store_links
+        game_info_map = post.metadata.game_info or {}
+
+        # store_links values are always list[str] after model validation
+        is_bundle = any(len(v) > 1 for v in store_links.values())
+
+        entries = []
+        for store, urls in store_links.items():
+            display_name = STORE_DISPLAY_NAMES.get(store.lower(), store)
+            infos_raw = game_info_map.get(store)
+
+            for i, url in enumerate(urls):
+                if isinstance(infos_raw, list):
+                    raw = infos_raw[i] if i < len(infos_raw) else None
+                else:
+                    raw = infos_raw if len(urls) == 1 else None
+                info = self._load_game_info(raw)
+
+                label = f"{display_name} {i + 1}" if len(urls) > 1 else display_name
+                entry = self._format_one_store_entry(store, url, info, label)
+                if entry:
+                    entries.append(entry)
+
+        if not entries:
+            return ""
+        separator = "\n" if is_bundle else " | "
+        return separator.join(entries)
+
+    # ── Main formatter ────────────────────────────────────────────────────
 
     def format_message(self, post: Post) -> str:
         """Форматирование сообщения для отправки."""
@@ -116,7 +221,11 @@ class MessageFormatter:
             cleaned_content = self.clean_text(post.content, final_clean=True)
             escaped_content = self.escape_html(cleaned_content)
             max_content_len = 600
-            content_display = escaped_content[:max_content_len] + "..." if len(escaped_content) > max_content_len else escaped_content
+            content_display = (
+                escaped_content[:max_content_len] + "..."
+                if len(escaped_content) > max_content_len
+                else escaped_content
+            )
 
             # Meta Line: Date | Rating | Views
             meta_parts = []
@@ -125,17 +234,17 @@ class MessageFormatter:
                     meta_parts.append(f"📅 {self.format_date(post.metadata.date)}")
                 if post.metadata.rating is not None:
                     meta_parts.append(f"⭐ {post.metadata.rating}")
-                if hasattr(post.metadata, 'views') and post.metadata.views:
+                if post.metadata.views:
                     meta_parts.append(f"👁 {post.metadata.views}")
 
             meta_line = " | ".join(meta_parts) if meta_parts else ""
 
-            # Store Links
-            stores_line = self._format_store_links(post)
+            # Store Links (with prices and game info)
+            stores_section = self._format_store_links(post)
 
             # Tags (Hashtags) — support Cyrillic, replace spaces with _
             tags_line = ""
-            if hasattr(post.metadata, 'tags') and post.metadata.tags:
+            if post.metadata and post.metadata.tags:
                 clean_tags = [re.sub(r"[^\w\u0400-\u04FF]", "", t.replace(" ", "_")) for t in post.metadata.tags]
                 tags_line = " ".join([f"#{t}" for t in clean_tags if t])
 
@@ -147,7 +256,7 @@ class MessageFormatter:
                 content_display,
                 "",
                 meta_line,
-                stores_line,
+                stores_section,
                 tags_line,
             ]
 

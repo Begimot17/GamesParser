@@ -7,14 +7,11 @@ class Storage(ABC):
     @abstractmethod
     async def mark_as_processed(self, post_id: str) -> None:
         """Marks a post as processed."""
-        pass
 
     @abstractmethod
     async def is_processed(self, post_id: str) -> bool:
         """Checks if a post has been processed."""
-        pass
 
     @abstractmethod
     async def close(self) -> None:
         """Closes the storage connection."""
-        pass

@@ -1,9 +1,10 @@
 """Tests for BaseParser."""
 
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
 import aiohttp
+import pytest
 
 from src.parsers.utils.base_parser import BaseParser
 

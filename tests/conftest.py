@@ -1,7 +1,9 @@
 """Shared pytest fixtures for GamesParser tests."""
 
 import os
+
 import pytest
+
 from src.config.config import settings
 
 

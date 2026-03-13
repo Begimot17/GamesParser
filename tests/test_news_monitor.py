@@ -1,8 +1,9 @@
 """Tests for NewsMonitor."""
 
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from src.models.models import Post, PostMetadata
 
@@ -35,9 +36,8 @@ def monitor():
     m.storage.is_processed = AsyncMock(return_value=False)
     m.storage.mark_as_processed = AsyncMock()
     m.storage.close = AsyncMock()
-    # Set shared storage on all parsers
-    for p in m.parsers:
-        p.storage = m.storage
+    # Storage is centralised in parser_manager now
+    m.parser_manager.storage = m.storage
     return m
 
 
@@ -45,10 +45,9 @@ class TestNewsMonitorInit:
     def test_monitor_has_parsers(self, monitor):
         assert len(monitor.parsers) >= 2
 
-    def test_monitor_uses_shared_storage(self, monitor):
-        """Все парсеры должны использовать один и тот же storage."""
-        for p in monitor.parsers:
-            assert p.storage is monitor.storage
+    def test_monitor_parser_manager_uses_storage(self, monitor):
+        """ParserManager должен использовать тот же storage, что и монитор."""
+        assert monitor.parser_manager.storage is monitor.storage
 
 
 class TestNewsMonitorStreaming:

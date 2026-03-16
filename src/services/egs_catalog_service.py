@@ -3,34 +3,39 @@
 import asyncio
 from typing import Callable, Optional
 
-import aiohttp
+import cloudscraper
 
 from src.common.logger import logger
 
-EGS_GRAPHQL_URL = "https://graphql.epicgames.com/graphql"
+EGS_GRAPHQL_URL = "https://store.epicgames.com/graphql"
 PAGE_SIZE = 40
-TIMEOUT = aiohttp.ClientTimeout(total=30)
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Content-Type": "application/json",
-}
 
+# Named operation so APQ / CDN caching can work; uses variables rather than
+# string interpolation to avoid any injection issues.
 _QUERY = """
-{
+query searchStoreQuery(
+  $allowCountries: String,
+  $count: Int,
+  $country: String!,
+  $locale: String,
+  $start: Int,
+  $onSale: Boolean
+) {
   Catalog {
     searchStore(
-      onSale: true
-      count: %(count)d
-      start: %(start)d
-      country: "UA"
-      locale: "uk"
+      allowCountries: $allowCountries,
+      count: $count,
+      country: $country,
+      locale: $locale,
+      start: $start,
+      onSale: $onSale
     ) {
       paging { total count }
       elements {
         title
         productSlug
         urlSlug
-        price(country: "UA") {
+        price(country: $country) {
           totalPrice {
             discountPrice
             originalPrice
@@ -47,37 +52,57 @@ _QUERY = """
 class EgsCatalogService:
     """Fetches EGS catalog and on-sale prices via Epic GraphQL API.
 
-    Prices are in USD cents (e.g. 999 = $9.99).
+    Uses cloudscraper to bypass Cloudflare protection.
+    Prices are returned in the store's local currency cents (UA → UAH kopecks).
+    Field names intentionally mirror SteamCatalogService (price_usd = local cents).
     """
 
     def __init__(self):
-        self._session: Optional[aiohttp.ClientSession] = None
+        # cloudscraper is synchronous; calls are wrapped in asyncio.to_thread
+        self._session: Optional[cloudscraper.CloudScraper] = None
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if not self._session or self._session.closed:
-            self._session = aiohttp.ClientSession()
+    def _get_session(self) -> cloudscraper.CloudScraper:
+        if self._session is None:
+            self._session = cloudscraper.create_scraper()
         return self._session
 
-    async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
+    def close(self) -> None:
+        if self._session is not None:
+            self._session.close()
             self._session = None
 
+    def _fetch_page_sync(self, start: int) -> dict:
+        """Synchronous POST to EGS GraphQL (called via asyncio.to_thread)."""
+        session = self._get_session()
+        variables = {
+            "allowCountries": "UA",
+            "count": PAGE_SIZE,
+            "country": "UA",
+            "locale": "uk",
+            "start": start,
+            "onSale": True,
+        }
+        resp = session.post(
+            EGS_GRAPHQL_URL,
+            json={"query": _QUERY, "variables": variables},
+            headers={"content-type": "application/json;charset=UTF-8"},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"EGS GraphQL start={start} returned HTTP {resp.status_code}")
+        return resp.json()
+
     async def _fetch_page(self, start: int) -> dict:
-        """POST one page to EGS GraphQL (PAGE_SIZE games)."""
-        session = await self._get_session()
-        query = _QUERY % {"count": PAGE_SIZE, "start": start}
-        payload = {"query": query}
-        async with session.post(EGS_GRAPHQL_URL, json=payload, timeout=TIMEOUT, headers=HEADERS) as resp:
-            if resp.status != 200:
-                raise RuntimeError(f"EGS GraphQL start={start} returned HTTP {resp.status}")
-            return await resp.json(content_type=None)
+        """Async wrapper around the synchronous fetch."""
+        return await asyncio.to_thread(self._fetch_page_sync, start)
 
     @staticmethod
     def _parse_game(element: dict) -> tuple[str, dict] | None:
         """Parse a single EGS catalog element into (url_slug, price_data).
 
         Returns None for F2P games (originalPrice == 0).
+        The 'discount' field in the EGS response is an absolute amount in cents,
+        not a percentage — we compute discount_pct here.
         """
         try:
             slug = (element.get("productSlug") or element.get("urlSlug") or "").strip()
@@ -89,18 +114,20 @@ class EgsCatalogService:
 
             original = price_block.get("originalPrice") or 0
             current = price_block.get("discountPrice") or 0
-            discount = price_block.get("discount") or 0
+            discount_abs = price_block.get("discount") or 0  # absolute cents, not %
 
             # F2P: original price is 0 → skip
             if original == 0:
                 return None
+
+            discount_pct = round(discount_abs / original * 100) if original > 0 else 0
 
             url = f"https://store.epicgames.com/en-US/p/{slug}"
             return slug, {
                 "name": title,
                 "price_usd": current,
                 "original_price_usd": original,
-                "discount_pct": discount,
+                "discount_pct": discount_pct,
                 "url": url,
             }
         except Exception:
@@ -113,7 +140,8 @@ class EgsCatalogService:
         """Paginate through all on-sale EGS games and call on_result_cb for each.
 
         on_result_cb(url_slug, price_data) where price_data contains:
-            name, price_usd (USD cents), original_price_usd (USD cents), discount_pct, url
+            name, price_usd (local cents), original_price_usd (local cents),
+            discount_pct, url
 
         Returns total number of games processed.
         """

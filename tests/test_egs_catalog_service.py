@@ -12,7 +12,9 @@ def _service():
 
 # ── Mock helpers ───────────────────────────────────────────────────────────────
 
-def _make_element(title, slug, original, current, discount):
+def _make_element(title, slug, original, current, discount_pct):
+    """discount_pct is %, stored as absolute cents in EGS API (original * pct / 100)."""
+    discount_abs = round(original * discount_pct / 100)
     return {
         "title": title,
         "productSlug": slug,
@@ -21,7 +23,7 @@ def _make_element(title, slug, original, current, discount):
             "totalPrice": {
                 "originalPrice": original,
                 "discountPrice": current,
-                "discount": discount,
+                "discount": discount_abs,
             }
         },
     }
@@ -43,14 +45,15 @@ def _make_page_response(elements, total):
 # ── _parse_game tests ──────────────────────────────────────────────────────────
 
 def test_parse_game_discount():
-    element = _make_element("Witcher 3", "the-witcher-3", 4999, 499, 90)
+    # original=5000, current=500, discount_abs=4500 → discount_pct=90
+    element = _make_element("Witcher 3", "the-witcher-3", 5000, 500, 90)
     result = EgsCatalogService._parse_game(element)
     assert result is not None
     slug, data = result
     assert slug == "the-witcher-3"
     assert data["name"] == "Witcher 3"
-    assert data["price_usd"] == 499
-    assert data["original_price_usd"] == 4999
+    assert data["price_usd"] == 500
+    assert data["original_price_usd"] == 5000
     assert data["discount_pct"] == 90
     assert data["url"] == "https://store.epicgames.com/en-US/p/the-witcher-3"
 
@@ -64,11 +67,11 @@ def test_parse_game_free():
 
 def test_parse_game_became_free():
     """Game that was paid but is now free → keep (original > 0)."""
-    element = _make_element("Sale Game", "sale-game", 2999, 0, 100)
+    element = _make_element("Sale Game", "sale-game", 3000, 0, 100)
     result = EgsCatalogService._parse_game(element)
     assert result is not None
     slug, data = result
-    assert data["original_price_usd"] == 2999
+    assert data["original_price_usd"] == 3000
     assert data["price_usd"] == 0
     assert data["discount_pct"] == 100
 

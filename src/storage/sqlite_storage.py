@@ -362,6 +362,225 @@ class SQLiteStorage(Storage):
             logger.error(f"Error cleaning up old posts: {e}", exc_info=True)
             return 0
 
+    # ── Steam Catalog ─────────────────────────────────────────────────────
+
+    async def init_steam_tables(self) -> None:
+        """Create steam_catalog table if it doesn't exist."""
+        conn = await self._get_connection()
+        await conn.execute(
+            """CREATE TABLE IF NOT EXISTS steam_catalog (
+                appid              INTEGER PRIMARY KEY,
+                name               TEXT,
+                url                TEXT,
+                price_uah          INTEGER,
+                original_price_uah INTEGER,
+                discount_pct       INTEGER DEFAULT 0,
+                last_checked       TIMESTAMP,
+                notified_price_uah INTEGER,
+                notified_at        TIMESTAMP
+            )"""
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_steam_last_checked ON steam_catalog(last_checked)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_steam_name ON steam_catalog(lower(trim(name)))"
+        )
+        await conn.commit()
+        logger.info("Steam catalog tables initialized")
+
+    async def init_egs_tables(self) -> None:
+        """Create egs_catalog table if it doesn't exist."""
+        conn = await self._get_connection()
+        await conn.execute(
+            """CREATE TABLE IF NOT EXISTS egs_catalog (
+                url_slug           TEXT PRIMARY KEY,
+                name               TEXT,
+                url                TEXT,
+                price_usd          INTEGER,
+                original_price_usd INTEGER,
+                discount_pct       INTEGER DEFAULT 0,
+                last_checked       TIMESTAMP,
+                notified_price_usd INTEGER,
+                notified_at        TIMESTAMP
+            )"""
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_egs_name ON egs_catalog(lower(trim(name)))"
+        )
+        await conn.commit()
+        logger.info("EGS catalog tables initialized")
+
+    async def get_egs_game(self, url_slug: str) -> Optional[dict]:
+        """Get a single EGS game record by url_slug."""
+        try:
+            conn = await self._get_connection()
+            async with conn.execute(
+                "SELECT url_slug, name, url, price_usd, original_price_usd, discount_pct, "
+                "last_checked, notified_price_usd, notified_at FROM egs_catalog WHERE url_slug = ?",
+                (url_slug,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "url_slug": row[0], "name": row[1], "url": row[2],
+                "price_usd": row[3], "original_price_usd": row[4],
+                "discount_pct": row[5], "last_checked": row[6],
+                "notified_price_usd": row[7], "notified_at": row[8],
+            }
+        except Exception as e:
+            logger.error(f"Error getting EGS game {url_slug}: {e}", exc_info=True)
+            return None
+
+    async def upsert_egs_games(self, games: list[dict]) -> None:
+        """Batch upsert EGS game records."""
+        if not games:
+            return
+        try:
+            conn = await self._get_connection()
+            await conn.executemany(
+                """INSERT INTO egs_catalog
+                   (url_slug, name, url, price_usd, original_price_usd, discount_pct, last_checked)
+                   VALUES (:url_slug, :name, :url, :price_usd, :original_price_usd, :discount_pct, :last_checked)
+                   ON CONFLICT(url_slug) DO UPDATE SET
+                       name=COALESCE(excluded.name, egs_catalog.name),
+                       url=excluded.url,
+                       price_usd=excluded.price_usd,
+                       original_price_usd=COALESCE(excluded.original_price_usd, egs_catalog.original_price_usd),
+                       discount_pct=excluded.discount_pct,
+                       last_checked=excluded.last_checked""",
+                games,
+            )
+            await conn.commit()
+        except Exception as e:
+            logger.error(f"Error upserting EGS games: {e}", exc_info=True)
+
+    async def update_egs_notification(self, url_slug: str, price_usd: int) -> None:
+        """Record that a notification was sent for an EGS game at a given price."""
+        try:
+            conn = await self._get_connection()
+            await conn.execute(
+                "UPDATE egs_catalog SET notified_price_usd = ?, notified_at = ? WHERE url_slug = ?",
+                (price_usd, datetime.now(), url_slug),
+            )
+            await conn.commit()
+        except Exception as e:
+            logger.error(f"Error updating EGS notification for {url_slug}: {e}", exc_info=True)
+
+    async def find_egs_game_by_name(self, name: str) -> Optional[dict]:
+        """Find an EGS game by case-insensitive trimmed name match."""
+        try:
+            conn = await self._get_connection()
+            async with conn.execute(
+                "SELECT url_slug, name, url, price_usd, original_price_usd, discount_pct, "
+                "last_checked, notified_price_usd, notified_at FROM egs_catalog "
+                "WHERE lower(trim(name)) = lower(trim(?))",
+                (name,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "url_slug": row[0], "name": row[1], "url": row[2],
+                "price_usd": row[3], "original_price_usd": row[4],
+                "discount_pct": row[5], "last_checked": row[6],
+                "notified_price_usd": row[7], "notified_at": row[8],
+            }
+        except Exception as e:
+            logger.error(f"Error finding EGS game by name {name!r}: {e}", exc_info=True)
+            return None
+
+    async def find_steam_game_by_name(self, name: str) -> Optional[dict]:
+        """Find a Steam game by case-insensitive trimmed name match."""
+        try:
+            conn = await self._get_connection()
+            async with conn.execute(
+                "SELECT appid, name, url, price_uah, original_price_uah, discount_pct, "
+                "last_checked, notified_price_uah, notified_at FROM steam_catalog "
+                "WHERE lower(trim(name)) = lower(trim(?))",
+                (name,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "appid": row[0], "name": row[1], "url": row[2],
+                "price_uah": row[3], "original_price_uah": row[4],
+                "discount_pct": row[5], "last_checked": row[6],
+                "notified_price_uah": row[7], "notified_at": row[8],
+            }
+        except Exception as e:
+            logger.error(f"Error finding Steam game by name {name!r}: {e}", exc_info=True)
+            return None
+
+    async def get_steam_game(self, appid: int) -> Optional[dict]:
+        """Get a single steam game record by appid."""
+        try:
+            conn = await self._get_connection()
+            async with conn.execute(
+                "SELECT appid, name, url, price_uah, original_price_uah, discount_pct, "
+                "last_checked, notified_price_uah, notified_at FROM steam_catalog WHERE appid = ?",
+                (appid,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "appid": row[0], "name": row[1], "url": row[2],
+                "price_uah": row[3], "original_price_uah": row[4],
+                "discount_pct": row[5], "last_checked": row[6],
+                "notified_price_uah": row[7], "notified_at": row[8],
+            }
+        except Exception as e:
+            logger.error(f"Error getting steam game {appid}: {e}", exc_info=True)
+            return None
+
+    async def upsert_steam_games(self, games: list[dict]) -> None:
+        """Batch upsert steam game records."""
+        if not games:
+            return
+        try:
+            conn = await self._get_connection()
+            await conn.executemany(
+                """INSERT INTO steam_catalog
+                   (appid, name, url, price_uah, original_price_uah, discount_pct, last_checked)
+                   VALUES (:appid, :name, :url, :price_uah, :original_price_uah, :discount_pct, :last_checked)
+                   ON CONFLICT(appid) DO UPDATE SET
+                       name=COALESCE(excluded.name, steam_catalog.name),
+                       price_uah=excluded.price_uah,
+                       original_price_uah=COALESCE(excluded.original_price_uah, steam_catalog.original_price_uah),
+                       discount_pct=excluded.discount_pct,
+                       last_checked=excluded.last_checked""",
+                games,
+            )
+            await conn.commit()
+        except Exception as e:
+            logger.error(f"Error upserting steam games: {e}", exc_info=True)
+
+    async def get_steam_appids(self) -> list[int]:
+        """Return all appids stored in steam_catalog."""
+        try:
+            conn = await self._get_connection()
+            async with conn.execute("SELECT appid FROM steam_catalog") as cursor:
+                rows = await cursor.fetchall()
+            return [row[0] for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting steam appids: {e}", exc_info=True)
+            return []
+
+    async def update_steam_notification(self, appid: int, price_uah: int) -> None:
+        """Record that a notification was sent for a game at a given price."""
+        try:
+            conn = await self._get_connection()
+            await conn.execute(
+                "UPDATE steam_catalog SET notified_price_uah = ?, notified_at = ? WHERE appid = ?",
+                (price_uah, datetime.now(), appid),
+            )
+            await conn.commit()
+        except Exception as e:
+            logger.error(f"Error updating steam notification for {appid}: {e}", exc_info=True)
+
     async def close(self) -> None:
         if self._connection:
             await self._connection.close()

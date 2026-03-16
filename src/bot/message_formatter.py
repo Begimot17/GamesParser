@@ -267,3 +267,94 @@ class MessageFormatter:
         except Exception as e:
             logger.error("Error formatting message: %s", str(e), exc_info=True)
             return f"Error formatting message: {post.link}"
+
+    def format_price_alert(
+        self,
+        name: str,
+        url: str,
+        old_price_uah: Optional[int],
+        new_price_uah: int,
+        original_price_uah: Optional[int],
+        discount_pct: int,
+        alert_type: str,
+        game_info=None,
+        store: str = "steam",
+        cross_store_data: Optional[dict] = None,
+    ) -> str:
+        """Format a price alert message for Steam or EGS.
+
+        alert_type: 'became_free' | 'big_discount'
+        store: 'steam' | 'egs'
+        Prices are in USD cents.
+        """
+        def fmt_usd(cents: Optional[int]) -> str:
+            if cents is None:
+                return "?"
+            return f"${cents / 100:.2f}"
+
+        safe_name = self.escape_html(name)
+        safe_url = self.escape_html(url)
+        name_link = f'<a href="{safe_url}">{safe_name}</a>'
+
+        store_lower = store.lower()
+        is_egs = store_lower == "egs"
+
+        if alert_type == "became_free":
+            if is_egs:
+                header = "🎁 Гра стала безкоштовною на Epic Games Store!"
+            else:
+                header = "🎁 Гра стала безкоштовною на Steam!"
+            old_fmt = fmt_usd(original_price_uah or old_price_uah)
+            saving = (original_price_uah or old_price_uah or 0) / 100
+            price_line = f"💰 Ціна: <s>{old_fmt}</s> → Безкоштовно (зниження на ${saving:.2f})"
+            if is_egs:
+                tags = "#free #epic #epicgames #безкоштовно"
+            else:
+                tags = "#free #steam #безкоштовно"
+        else:
+            if is_egs:
+                header = "💥 Велика знижка на Epic Games Store!"
+            else:
+                header = "💥 Велика знижка на Steam!"
+            orig_fmt = fmt_usd(original_price_uah)
+            new_fmt = fmt_usd(new_price_uah)
+            saving = ((original_price_uah or 0) - new_price_uah) / 100
+            price_line = f"💰 <s>{orig_fmt}</s> → {new_fmt} (-{discount_pct}%, зниження на ${saving:.2f})"
+            if is_egs:
+                tags = "#знижка #epic #epicgames"
+            else:
+                tags = "#знижка #steam"
+
+        parts = [header, f"🎮 {name_link}", price_line]
+
+        if game_info:
+            if game_info.genre:
+                parts.append(f"🎭 Жанр: {self.escape_html(game_info.genre)}")
+            meta_parts = []
+            if game_info.metacritic is not None:
+                meta_parts.append(f"⭐ Metacritic: {game_info.metacritic}")
+            if game_info.developer:
+                meta_parts.append(f"👨‍💻 {self.escape_html(game_info.developer)}")
+            if meta_parts:
+                parts.append(" | ".join(meta_parts))
+
+        parts.append(tags)
+
+        if cross_store_data:
+            cross_store = cross_store_data.get("store", "")
+            cross_url = cross_store_data.get("url", "")
+            cross_price = cross_store_data.get("price_usd")
+            cross_original = cross_store_data.get("original_price_usd")
+            cross_discount = cross_store_data.get("discount_pct") or 0
+
+            if cross_url:
+                if cross_store == "steam":
+                    cross_label = "Також у Steam"
+                else:
+                    cross_label = "Також в Epic Games Store"
+
+                cross_link = f'<a href="{self.escape_html(cross_url)}">{cross_label}</a>'
+                cross_price_line = f"💲 {fmt_usd(cross_original)} → {fmt_usd(cross_price)} (-{cross_discount}%)"
+                parts.append(f"━━━━━━━━━━\n🔗 {cross_link}\n{cross_price_line}")
+
+        return "\n".join(parts)

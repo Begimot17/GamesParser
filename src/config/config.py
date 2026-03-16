@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "gpt-4o-mini"
     ENABLE_LLM: bool = False  # Set to True to enable LLM data enrichment
 
+    # Steam price monitor settings
+    STEAM_SCAN_INTERVAL: int = 43200        # seconds, 12 hours
+    STEAM_DISCOUNT_THRESHOLD: int = 90      # % discount threshold for notifications
+    STEAM_APPLIST_REFRESH_DAYS: int = 7     # refresh app list every N days
+
+    # EGS price monitor settings
+    EGS_SCAN_INTERVAL: int = 43200          # seconds, 12 hours
+    EGS_DISCOUNT_THRESHOLD: int = 90        # % discount threshold for notifications
+
     # Parsers configuration (loaded from YAML)
     PARSERS_CONFIG: Dict[str, Any] = {}
 

@@ -26,8 +26,9 @@ def setup_logger():
     # Formatter
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-    # Console Handler
-    stdout_handler = logging.StreamHandler(sys.stdout)
+    # Console Handler — use UTF-8 with replace for Windows compatibility
+    stdout_stream = open(sys.stdout.fileno(), mode="w", encoding="utf-8", errors="replace", closefd=False)
+    stdout_handler = logging.StreamHandler(stdout_stream)
     stdout_handler.setLevel(log_level)
     stdout_handler.setFormatter(formatter)
     logger.addHandler(stdout_handler)

@@ -9,6 +9,8 @@ from src.common.logger import setup_logger, logger, audit_logger, missing_data_l
 from src.common.metrics import CycleMetrics
 from src.config.config import settings
 from src.models.models import Post
+from src.monitors.egs_price_monitor import EgsPriceMonitor
+from src.monitors.steam_price_monitor import SteamPriceMonitor
 from src.parsers.parser_manager import ParserManager
 from src.parsers.pikabu_parser import PikabuParser
 from src.parsers.stopgame_parser import StopGameParser
@@ -31,12 +33,14 @@ class NewsMonitor:
         )
 
         parsers = [
-            PikabuParser(),
-            VGTimesParser(),
-            StopGameParser(),
+            # PikabuParser(),
+            # VGTimesParser(),
+            # StopGameParser(),
         ]
         self.parsers = parsers
         self.parser_manager = ParserManager(parsers=parsers, storage=self.storage)
+        self.steam_monitor = SteamPriceMonitor(storage=self.storage, bot=self.bot)
+        self.egs_monitor = EgsPriceMonitor(storage=self.storage, bot=self.bot)
 
     async def run(self, use_streaming: bool = True):
         """Runs the monitoring loop."""
@@ -49,6 +53,8 @@ class NewsMonitor:
                 await asyncio.gather(
                     self._run_streaming(),
                     self.bot.start_polling(),
+                    self.steam_monitor.run(),
+                    self.egs_monitor.run(),
                 )
             else:
                 await self._run_polling()

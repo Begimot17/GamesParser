@@ -34,7 +34,12 @@ def monitor():
     m.bot.send_message = AsyncMock(return_value=True)
     m.storage = MagicMock()
     m.storage.is_processed = AsyncMock(return_value=False)
+    m.storage.is_title_seen = AsyncMock(return_value=(False, "", ""))
     m.storage.mark_as_processed = AsyncMock()
+    m.storage.mark_title_seen = AsyncMock()
+    m.storage.save_failed_post = AsyncMock()
+    m.storage.get_failed_posts = AsyncMock(return_value=[])
+    m.storage.save_post = AsyncMock()
     m.storage.close = AsyncMock()
     # Storage is centralised in parser_manager now
     m.parser_manager.storage = m.storage

@@ -1,5 +1,6 @@
 """VGTimes parser for GamesParser project."""
 
+import asyncio
 import re
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, AsyncIterator, Optional
@@ -7,7 +8,7 @@ from urllib.parse import unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup, Tag
 
-from src.common.logger import logger
+from src.common.logger import logger, missing_data_logger
 from src.config.config import settings
 from src.models.models import Post, PostMetadata
 from src.parsers.utils.base_parser import BaseParser
@@ -39,8 +40,17 @@ class VGTimesParser(BaseParser):
         self.SELECTORS = self.config.get("selectors", {})
         self.STORE_CONFIG = self.config.get("stores", {})
 
-        self.llm = LLMG4F(model_name=settings.LLM_MODEL)
+        self.llm = LLMG4F(model_name=settings.LLM_MODEL) if settings.ENABLE_LLM else None
         self.price_service = PriceService()
+        self._is_first_run: bool = False
+
+    def _build_page_urls(self, n: int) -> list[str]:
+        """Build list of page URLs for pagination. Page 1 = base URL, page N = ?PAGEN_1=N."""
+        base = self.TARGET_URLS[0].rstrip("/") + "/"  # https://vgtimes.ru/free/
+        urls = [base]
+        for i in range(2, n + 1):
+            urls.append(f"{base}?PAGEN_1={i}")
+        return urls
 
     def _clean_store_url(self, url: str, store_name: str) -> str:
         """Очистка и проверка URL магазина с поддержкой /go/ редиректов VGTimes."""
@@ -85,14 +95,22 @@ class VGTimesParser(BaseParser):
             articles = soup.select(self.SELECTORS["articles"])
             logger.info(f"[VGTimesParser] Found {len(articles)} articles on page")
 
-            for article in articles:
-                try:
-                    post = await self._parse_article(article)
-                    if post:
-                        logger.info(f"[VGTimesParser] Yielding post {post.id}")
-                        yield post
-                except Exception as e:
-                    logger.error(f"[VGTimesParser] Error processing individual article: {e}", exc_info=True)
+            sem = asyncio.Semaphore(3)
+
+            async def _fetch_with_sem(article):
+                async with sem:
+                    return await self._parse_article(article)
+
+            tasks = [_fetch_with_sem(a) for a in articles]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error("[VGTimesParser] Article parse error: %s", result)
+                elif result:
+                    logger.info(f"[VGTimesParser] Yielding post {result.id}")
+                    yield result
+
         except Exception as e:
             logger.error(f"[VGTimesParser] Unexpected error in _process_url for {target_url}: {e}", exc_info=True)
             if html:
@@ -102,7 +120,11 @@ class VGTimesParser(BaseParser):
         """Fetch and parse posts from VGTimes."""
         logger.info("[VGTimesParser] Starting fetch_posts...")
         all_posts: list[Post] = []
-        urls = [url] if url else self.TARGET_URLS
+        if url:
+            urls = [url]
+        else:
+            pages = self.config.get("initial_pages", 1) if self._is_first_run else 1
+            urls = self._build_page_urls(pages)
 
         for target_url in urls:
             async for post in self._process_url(target_url):
@@ -113,7 +135,8 @@ class VGTimesParser(BaseParser):
     async def stream_posts(self) -> AsyncGenerator[Post, None]:
         """Генератор для потокового получения статей по мере их парсинга."""
         logger.info("[VGTimesParser] Starting stream_posts...")
-        for target_url in self.TARGET_URLS:
+        pages = self.config.get("initial_pages", 1) if self._is_first_run else 1
+        for target_url in self._build_page_urls(pages):
             async for post in self._process_url(target_url):
                 yield post
         logger.info("[VGTimesParser] stream_posts completed")
@@ -186,6 +209,11 @@ class VGTimesParser(BaseParser):
         if not image_url:
             image_url = image_elem.get("src") if image_elem else None
 
+        if not image_url:
+            missing_data_logger.warning(
+                "[VGTimes] No image found | post_id=%s | url=%s", article_id, link
+            )
+
         rating_elem = article_html.select_one(self.SELECTORS["rating"])
         rating = rating_elem.get_text(strip=True) if rating_elem else None
 
@@ -204,8 +232,25 @@ class VGTimesParser(BaseParser):
 
             content = self._clean_text(content)
 
+            if len(content) < 50:
+                missing_data_logger.warning(
+                    "[VGTimes] Content too short (%d chars) | post_id=%s | url=%s",
+                    len(content), article_id, link
+                )
+
             if len(content) > self.MAX_TEXT_LENGTH:
                 content = content[:self.MAX_TEXT_LENGTH] + "..."
+
+            if not store_links:
+                missing_data_logger.info(
+                    "[VGTimes] No store links found (expected for news/giveaway articles) | post_id=%s | title=%s | url=%s",
+                    article_id, title, link
+                )
+            elif "steam" not in store_links:
+                missing_data_logger.warning(
+                    "[VGTimes] No Steam link found | post_id=%s | title=%s | stores=%s | url=%s",
+                    article_id, title, list(store_links.keys()), link
+                )
 
             game_info_raw = {}
             if store_links:

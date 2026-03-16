@@ -46,11 +46,15 @@ class Settings(BaseSettings):
     # Storage settings
     DB_PATH: str = "news_bot.db"
     TEST_DB_PATH: str = "test_news_bot.db"
+    DB_RETENTION_DAYS: int = 90
     TEST_CHANNEL_ID: Optional[str] = None
     SAVE_HTML: bool = False
     HTML_DIR: str = "html_articles"
     SAVE_ALL_FETCHED_HTML: bool = True
     FETCHED_HTML_DIR: str = "fetched_html"
+
+    # Bot command settings
+    ADMIN_USER_IDS: list[int] = []
 
     # LLM settings
     LLM_MODEL: str = "gpt-4o-mini"

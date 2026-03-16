@@ -8,7 +8,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from bs4 import BeautifulSoup, Tag
 from pydantic import ValidationError
 
-from src.common.logger import logger
+from src.common.logger import logger, missing_data_logger
 from src.config.config import settings
 from src.models.models import Post, PostMetadata
 from src.parsers.utils.base_parser import BaseParser
@@ -40,8 +40,17 @@ class PikabuParser(BaseParser):
         self.SELECTORS = self.config.get("selectors", {})
         self.STORE_CONFIG = self.config.get("stores", {})
 
-        self.llm = LLMG4F(model_name=settings.LLM_MODEL)
+        self.llm = LLMG4F(model_name=settings.LLM_MODEL) if settings.ENABLE_LLM else None
         self.price_service = PriceService()
+        self._is_first_run: bool = False
+
+    def _build_page_urls(self, n: int) -> list[str]:
+        """Build list of page URLs for pagination. Page 1 = base URL, page N = /hot/N."""
+        base = self.TARGET_URLS[0]  # https://pikabu.ru/community/steam
+        urls = [base]
+        for i in range(2, n + 1):
+            urls.append(f"{base}/hot/{i}")
+        return urls
 
     def _extract_store_links(self, text: str) -> dict:
         """Извлечение ссылок на магазины из текста через regex."""
@@ -118,7 +127,8 @@ class PikabuParser(BaseParser):
         """Получение и обработка постов."""
         logger.info("[PikabuParser] Starting fetch_posts...")
         all_posts: list[Post] = []
-        for target_url in self.TARGET_URLS:
+        pages = self.config.get("initial_pages", 1) if self._is_first_run else 1
+        for target_url in self._build_page_urls(pages):
             async for post in self._process_url(target_url):
                 all_posts.append(post)
         logger.info(f"[PikabuParser] fetch_posts completed. Total posts: {len(all_posts)}")
@@ -127,7 +137,8 @@ class PikabuParser(BaseParser):
     async def stream_posts(self) -> AsyncGenerator[Post, None]:
         """Генератор для потокового получения постов по мере их парсинга."""
         logger.info("[PikabuParser] Starting stream_posts...")
-        for target_url in self.TARGET_URLS:
+        pages = self.config.get("initial_pages", 1) if self._is_first_run else 1
+        for target_url in self._build_page_urls(pages):
             async for post in self._process_url(target_url):
                 yield post
         logger.info("[PikabuParser] stream_posts completed")
@@ -261,6 +272,28 @@ class PikabuParser(BaseParser):
             store_links = self._extract_store_links_from_html(article)
             if not store_links:
                 store_links = self._extract_store_links(content)
+
+            if not store_links:
+                missing_data_logger.warning(
+                    "[Pikabu] No store links found | post_id=%s | title=%s | url=%s",
+                    post_id, title, initial_data["link"]
+                )
+            elif "steam" not in store_links:
+                missing_data_logger.warning(
+                    "[Pikabu] No Steam link found | post_id=%s | title=%s | stores=%s | url=%s",
+                    post_id, title, list(store_links.keys()), initial_data["link"]
+                )
+
+            if not images:
+                missing_data_logger.warning(
+                    "[Pikabu] No image found | post_id=%s | url=%s", post_id, initial_data["link"]
+                )
+
+            if len(content) < 50:
+                missing_data_logger.warning(
+                    "[Pikabu] Content too short (%d chars) | post_id=%s | url=%s",
+                    len(content), post_id, initial_data["link"]
+                )
 
             if settings.ENABLE_LLM:
                 title, content, images, store_links = await self._update_post_with_llm_data(

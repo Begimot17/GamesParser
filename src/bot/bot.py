@@ -1,15 +1,21 @@
 """Telegram bot logic for GamesParser project."""
 
-from typing import Optional
+import asyncio
+from typing import Optional, TYPE_CHECKING
 
 import httpx
 from telegram import Bot, InputMediaPhoto, request
 from telegram.constants import ParseMode
+from telegram.ext import Application
+from telegram.ext import CommandHandler as TelegramCommandHandler
 
 from src.bot.message_formatter import MessageFormatter
 from src.bot.retry_handler import RetryHandler, retry
 from src.common.logger import logger
 from src.models.models import Post
+
+if TYPE_CHECKING:
+    from src.bot.command_handler import CommandHandler
 
 
 class TelegramNewsBot:
@@ -37,6 +43,8 @@ class TelegramNewsBot:
         self.http_client = self._init_http_client()
         self.retry_handler = self._init_retry_handler()
         self.formatter = MessageFormatter()
+        self._application: Optional[Application] = None
+        self._polling_started: bool = False
 
     def _get_default_config(self, config: Optional[dict]) -> dict:
         defaults = {
@@ -62,6 +70,38 @@ class TelegramNewsBot:
                 "base_delay": self.config["retry_delay"],
             },
         )
+
+    def _get_application(self) -> Application:
+        """Lazily build the Application instance (used for command polling)."""
+        if self._application is None:
+            self._application = Application.builder().token(self.token).build()
+        return self._application
+
+    def register_commands(self, handler: "CommandHandler") -> None:
+        """Register /stats, /recent, /retry command handlers."""
+        app = self._get_application()
+        app.add_handler(TelegramCommandHandler("stats", handler.cmd_stats))
+        app.add_handler(TelegramCommandHandler("recent", handler.cmd_recent))
+        app.add_handler(TelegramCommandHandler("retry", handler.cmd_retry))
+
+    async def start_polling(self) -> None:
+        """Start polling for bot commands. Runs until cancelled."""
+        app = self._get_application()
+        self._polling_started = True
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        logger.info("[TelegramNewsBot] Command polling started.")
+        try:
+            await asyncio.Event().wait()  # Block until cancelled
+        finally:
+            if app.updater.running:
+                await app.updater.stop()
+            if app.running:
+                await app.stop()
+            await app.shutdown()
+            self._polling_started = False
+            logger.info("[TelegramNewsBot] Command polling stopped.")
 
     async def close(self):
         logger.info("[TelegramNewsBot] Closing bot session...")

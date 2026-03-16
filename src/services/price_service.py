@@ -1,8 +1,9 @@
-"""Game info lookup service (price, genre, metacritic) for Steam and EGS."""
+"""Game info lookup service (price, genre, metacritic) for Steam, EGS, and GOG."""
 
 import asyncio
 import logging
 import re
+from datetime import datetime, timedelta
 from typing import Optional
 
 import aiohttp
@@ -10,14 +11,20 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
+try:
+    from src.common.logger import missing_data_logger
+except ImportError:
+    missing_data_logger = logging.getLogger("GamesParser.MissingData")
+
 STEAM_API_URL = "https://store.steampowered.com/api/appdetails"
+GOG_FREE_URL = "https://www.gog.com/games/ajax/filtered?mediaType=game&price=free&page=1"
 TIMEOUT = aiohttp.ClientTimeout(total=8)
 
 
 class GameInfo:
     """Aggregated info about a game from a store page."""
 
-    __slots__ = ("name", "price", "original_price", "discount_pct", "genre", "metacritic", "developer", "is_free")
+    __slots__ = ("name", "price", "original_price", "discount_pct", "genre", "metacritic", "developer", "is_free", "review_score")
 
     def __init__(
         self,
@@ -29,6 +36,7 @@ class GameInfo:
         metacritic: Optional[int] = None,
         developer: Optional[str] = None,
         is_free: bool = False,
+        review_score: Optional[str] = None,
     ):
         self.name = name
         self.price = price
@@ -38,6 +46,8 @@ class GameInfo:
         self.metacritic = metacritic
         self.developer = developer
         self.is_free = is_free
+        # Steam review_score_desc string (e.g. "Overwhelmingly Positive"); uses uk locale (l=uk)
+        self.review_score = review_score
 
     def format_price(self) -> Optional[str]:
         """Returns HTML-formatted price string with discount markers."""
@@ -59,6 +69,7 @@ class GameInfo:
             "metacritic": self.metacritic,
             "developer": self.developer,
             "is_free": self.is_free,
+            "review_score": self.review_score,
         }
 
     @staticmethod
@@ -68,6 +79,30 @@ class GameInfo:
 
 class PriceService:
     """Fetches game info (price, genre, metacritic) from store APIs."""
+
+    EGS_CACHE_TTL = timedelta(minutes=30)
+    GOG_CACHE_TTL = timedelta(minutes=30)
+
+    def __init__(self):
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._egs_cache: Optional[list] = None
+        self._egs_cache_ts: Optional[datetime] = None
+        self._gog_cache: Optional[list] = None
+        self._gog_cache_ts: Optional[datetime] = None
+
+    async def __aenter__(self):
+        self._session = aiohttp.ClientSession()
+        return self
+
+    async def __aexit__(self, *args):
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if not self._session or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
 
     # ── Steam ──────────────────────────────────────────────────────────────
 
@@ -79,17 +114,19 @@ class PriceService:
         """Fetch price + genre + metacritic from Steam API (UAH, uk locale)."""
         app_id = self._extract_steam_app_id(url)
         if not app_id:
+            missing_data_logger.warning("[Steam] Cannot extract app_id from URL: %s", url)
             return None
         try:
             params = {"appids": app_id, "cc": "ua", "l": "uk"}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(STEAM_API_URL, params=params, timeout=TIMEOUT) as resp:
-                    if resp.status != 200:
-                        return None
-                    data = await resp.json(content_type=None)
+            session = await self._get_session()
+            async with session.get(STEAM_API_URL, params=params, timeout=TIMEOUT) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json(content_type=None)
 
             game = data.get(app_id, {})
             if not game.get("success"):
+                missing_data_logger.warning("[Steam] API returned success=False for app_id=%s, url=%s", app_id, url)
                 return None
             info = game.get("data", {})
 
@@ -106,6 +143,7 @@ class PriceService:
             developer = devs[0] if devs else None
 
             game_name = info.get("name")
+            review_score = info.get("review_score_desc") or None
 
             return GameInfo(
                 name=game_name,
@@ -116,6 +154,7 @@ class PriceService:
                 metacritic=int(metacritic) if metacritic else None,
                 developer=developer,
                 is_free=is_free,
+                review_score=review_score,
             )
         except Exception as e:
             logger.debug("Steam info lookup failed for %s: %s", url, e)
@@ -137,34 +176,39 @@ class PriceService:
     )
 
     async def _get_egs_free_games(self) -> list:
-        """Fetch currently free EGS games list (cached per instance call)."""
+        """Fetch currently free EGS games list (TTL-cached per instance)."""
+        now = datetime.utcnow()
+        if (
+            self._egs_cache is not None
+            and self._egs_cache_ts is not None
+            and (now - self._egs_cache_ts) < self.EGS_CACHE_TTL
+        ):
+            return self._egs_cache
         try:
             headers = {"User-Agent": "Mozilla/5.0"}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(self.EGS_FREE_PROMO_URL, timeout=TIMEOUT, headers=headers) as resp:
-                    if resp.status != 200:
-                        return []
-                    data = await resp.json(content_type=None)
-            return (
+            session = await self._get_session()
+            async with session.get(self.EGS_FREE_PROMO_URL, timeout=TIMEOUT, headers=headers) as resp:
+                if resp.status != 200:
+                    return self._egs_cache or []
+                data = await resp.json(content_type=None)
+            elements = (
                 data.get("data", {})
                 .get("Catalog", {})
                 .get("searchStore", {})
                 .get("elements", [])
             )
+            self._egs_cache = elements
+            self._egs_cache_ts = now
+            return elements
         except Exception as e:
             logger.debug("EGS free games fetch failed: %s", e)
-            return []
+            return self._egs_cache or []
 
     async def get_egs_info(self, url: str) -> Optional[GameInfo]:
-        """Fetch EGS game info.
-
-        EGS store pages are protected by Cloudflare and can't be scraped directly.
-        We check the free games promotions endpoint (works without auth) and match
-        by product slug. If the game is found there, we return its price (often free).
-        Otherwise we return a minimal GameInfo with no price.
-        """
+        """Fetch EGS game info from free promotions endpoint."""
         slug = self._extract_egs_slug(url)
         if not slug:
+            missing_data_logger.warning("[EGS] Cannot extract slug from URL: %s", url)
             return None
         try:
             elements = await self._get_egs_free_games()
@@ -173,9 +217,9 @@ class PriceService:
                 url_slug = (elem.get("urlSlug") or "")
                 if slug in (prod_slug, url_slug):
                     return self._parse_egs_element(elem)
+            missing_data_logger.info("[EGS] Game not found in free promotions | slug=%s | url=%s", slug, url)
         except Exception as e:
             logger.debug("EGS info lookup failed for %s: %s", url, e)
-        # Game not found in free promotions – no price available
         return None
 
     def _parse_egs_element(self, elem: dict) -> GameInfo:
@@ -217,6 +261,63 @@ class PriceService:
             is_free=is_free,
         )
 
+    # ── GOG ────────────────────────────────────────────────────────────────
+
+    def _extract_gog_slug(self, url: str) -> Optional[str]:
+        m = re.search(r"/game/([^/?#]+)", url)
+        return m.group(1) if m else None
+
+    async def _get_gog_free_games(self) -> list:
+        """Fetch currently free GOG games list (TTL-cached per instance)."""
+        now = datetime.utcnow()
+        if (
+            self._gog_cache is not None
+            and self._gog_cache_ts is not None
+            and (now - self._gog_cache_ts) < self.GOG_CACHE_TTL
+        ):
+            return self._gog_cache
+        try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            session = await self._get_session()
+            async with session.get(GOG_FREE_URL, timeout=TIMEOUT, headers=headers) as resp:
+                if resp.status != 200:
+                    return self._gog_cache or []
+                data = await resp.json(content_type=None)
+            products = data.get("products", [])
+            self._gog_cache = products
+            self._gog_cache_ts = now
+            return products
+        except Exception as e:
+            logger.debug("GOG free games fetch failed: %s", e)
+            return self._gog_cache or []
+
+    async def get_gog_info(self, url: str) -> Optional[GameInfo]:
+        """Check if a GOG game is in the free promotions list."""
+        slug = self._extract_gog_slug(url)
+        if not slug:
+            missing_data_logger.warning("[GOG] Cannot extract slug from URL: %s", url)
+            return None
+        try:
+            products = await self._get_gog_free_games()
+            for product in products:
+                product_slug = product.get("slug", "")
+                if product_slug == slug:
+                    price_info = product.get("price", {})
+                    is_free = str(price_info.get("amount", "1")) == "0"
+                    genre_tags = product.get("genres", [])
+                    genre = ", ".join(genre_tags[:3]) if genre_tags else None
+                    developer = product.get("developer") or None
+                    return GameInfo(
+                        name=product.get("title"),
+                        genre=genre,
+                        developer=developer,
+                        is_free=is_free,
+                    )
+            missing_data_logger.info("[GOG] Game not found in free promotions | slug=%s | url=%s", slug, url)
+        except Exception as e:
+            logger.debug("GOG info lookup failed for %s: %s", url, e)
+        return None
+
     # ── Public API ──────────────────────────────────────────────────────────
 
     async def get_all_info(self, store_links: dict) -> dict:
@@ -232,6 +333,8 @@ class PriceService:
                 return await self.get_steam_info(str(url))
             if store == "epicgames":
                 return await self.get_egs_info(str(url))
+            if store == "gog":
+                return await self.get_gog_info(str(url))
             return None
 
         tasks = []

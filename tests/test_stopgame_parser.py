@@ -128,13 +128,45 @@ class TestStopGameParser(unittest.TestCase):
         </div>
         """, "html.parser").find("div", class_="article-item")
 
-        self.parser._fetch_article_content = AsyncMock(return_value="Full article content here")
+        self.parser._fetch_article_data = AsyncMock(return_value=("Full article content here", []))
 
         post = asyncio.run(self.parser._parse_article(article_html))
 
         self.assertIsNotNone(post)
         self.assertEqual(post.content, "Full article content here")
-        self.parser._fetch_article_content.assert_called_once()
+        self.parser._fetch_article_data.assert_called_once()
+
+
+class TestStopGamePagination(unittest.TestCase):
+    @patch("src.config.config.settings.PARSERS_CONFIG", {
+        "stopgame": {
+            "request_timeout": 10,
+            "max_text_length": 1000,
+            "valid_image_extensions": [".png", ".jpg"],
+            "rate_limit_delay": 1,
+            "initial_pages": 3,
+            "target_urls": "https://stopgame.ru/news",
+            "selectors": {"articles": ".a", "title": ".t", "link": ".l", "content": ".c", "date": ".d"},
+            "stores": {},
+        },
+    })
+    def setUp(self):
+        self.parser = StopGameParser()
+
+    def test_build_page_urls_single(self):
+        urls = self.parser._build_page_urls(1)
+        self.assertEqual(urls, ["https://stopgame.ru/news"])
+
+    def test_build_page_urls_multi(self):
+        urls = self.parser._build_page_urls(3)
+        self.assertEqual(urls, [
+            "https://stopgame.ru/news",
+            "https://stopgame.ru/news/p2",
+            "https://stopgame.ru/news/p3",
+        ])
+
+    def test_is_first_run_defaults_false(self):
+        self.assertFalse(self.parser._is_first_run)
 
 
 if __name__ == "__main__":

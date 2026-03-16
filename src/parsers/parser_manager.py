@@ -55,15 +55,28 @@ class ParserManager:
         logger.info(f"[ParserManager] Total posts fetched: {len(all_posts)}")
         return all_posts
 
+    async def _get_is_first_run(self) -> bool:
+        """Returns True if the posts table is empty (first run)."""
+        if not self.storage:
+            return False
+        try:
+            stats = await self.storage.get_posts_stats()
+            return stats.get("total", 0) == 0
+        except Exception:
+            return False
+
     async def stream_posts(self) -> AsyncGenerator[Post, None]:
         """Infinite generator for streaming posts."""
         logger.info(
             "[ParserManager] Starting infinite streaming of posts from all parsers...",
         )
         while True:
+            is_first_run = await self._get_is_first_run()
             for parser in self.parsers:
+                parser._is_first_run = is_first_run
                 logger.info(
-                    f"[ParserManager] Streaming posts using {type(parser).__name__}",
+                    f"[ParserManager] Streaming posts using {type(parser).__name__}"
+                    + (" (first run)" if is_first_run else ""),
                 )
                 try:
                     async with parser:

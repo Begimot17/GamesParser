@@ -3,6 +3,7 @@ pikabu:
   max_text_length: 4000
   valid_image_extensions: [".jpg", ".jpeg", ".png", ".gif", ".webp"]
   rate_limit_delay: 2
+  initial_pages: 3
   target_urls: "https://pikabu.ru/community/steam"
   selectors:
     articles: "article[data-story-id]"
@@ -41,6 +42,7 @@ vgtimes:
   max_text_length: 4000
   valid_image_extensions: [".jpg", ".jpeg", ".png", ".gif", ".webp"]
   rate_limit_delay: 2
+  initial_pages: 3
   target_urls: "https://vgtimes.ru/free/"
   selectors:
     # Selectors for the list page (https://vgtimes.ru/free/)
@@ -59,16 +61,20 @@ vgtimes:
   stores:
     steam:
       domain: "store.steampowered.com"
+      validation_regex: "/app/\\d+/"
     epicgames:
       domain: "epicgames.com"
+      validation_regex: "/p/[^/?#]+"
     gog:
       domain: "gog.com"
+      validation_regex: "/game/[^/?#]+"
 
 stopgame:
   request_timeout: 30
   max_text_length: 4000
   valid_image_extensions: [".jpg", ".jpeg", ".png", ".gif", ".webp"]
   rate_limit_delay: 2
+  initial_pages: 3
   target_urls: "https://stopgame.ru/news"
   selectors:
     # Using partial class matchers for stability against hash changes
@@ -78,12 +84,16 @@ stopgame:
     image: "a[class*='_image_'] img" # Image is inside the 'image' link container
     # Content requires full page fetch from individual article page
     content: "div[class*='_text_']"
+    article_images: "div[class*='_text_'] img"
     # Date is found via specific logic (text node) or partially matched class
     date: "span[class*='_date_']"
   stores:
     steam:
       domain: "store.steampowered.com"
+      validation_regex: "/app/\\d+/"
     epicgames:
       domain: "epicgames.com"
+      validation_regex: "/p/[^/?#]+"
     gog:
       domain: "gog.com"
+      validation_regex: "/game/[^/?#]+"

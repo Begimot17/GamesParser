@@ -8,11 +8,12 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Tag
 from pydantic import ValidationError
 
-from src.common.logger import logger
+from src.common.logger import logger, missing_data_logger
 from src.config.config import settings
 from src.models.models import Post, PostMetadata
 from src.parsers.utils.base_parser import BaseParser
 from src.services.llm_g4f import LLMG4F
+from src.services.price_service import PriceService
 
 
 class StopGameParser(BaseParser):
@@ -39,7 +40,17 @@ class StopGameParser(BaseParser):
         self.SELECTORS = self.config.get("selectors", {})
         self.STORE_CONFIG = self.config.get("stores", {})
 
-        self.llm = LLMG4F(model_name=settings.LLM_MODEL)
+        self.llm = LLMG4F(model_name=settings.LLM_MODEL) if settings.ENABLE_LLM else None
+        self.price_service = PriceService()
+        self._is_first_run: bool = False
+
+    def _build_page_urls(self, n: int) -> list[str]:
+        """Build list of page URLs for pagination. Page 1 = base URL, page N = /pN."""
+        base = self.TARGET_URLS[0]  # https://stopgame.ru/news
+        urls = [base]
+        for i in range(2, n + 1):
+            urls.append(f"{base}/p{i}")
+        return urls
 
     def _extract_store_links(self, article_html: Tag) -> dict:
         """Extract store links from article."""
@@ -85,7 +96,11 @@ class StopGameParser(BaseParser):
         """Fetch and parse posts from StopGame."""
         logger.info("[StopGameParser] Starting fetch_posts...")
         all_posts: list[Post] = []
-        urls = [url] if url else self.TARGET_URLS
+        if url:
+            urls = [url]
+        else:
+            pages = self.config.get("initial_pages", 1) if self._is_first_run else 1
+            urls = self._build_page_urls(pages)
 
         for target_url in urls:
             async for post in self._process_url(target_url):
@@ -96,7 +111,8 @@ class StopGameParser(BaseParser):
     async def stream_posts(self) -> AsyncGenerator[Post, None]:
         """Генератор для потокового получения статей по мере их парсинга."""
         logger.info("[StopGameParser] Starting stream_posts...")
-        for target_url in self.TARGET_URLS:
+        pages = self.config.get("initial_pages", 1) if self._is_first_run else 1
+        for target_url in self._build_page_urls(pages):
             async for post in self._process_url(target_url):
                 yield post
         logger.info("[StopGameParser] stream_posts completed")
@@ -208,25 +224,38 @@ class StopGameParser(BaseParser):
             "date": date,
         }
 
-    async def _fetch_article_content(self, url: str) -> str:
-        """Загружает полную страницу статьи и извлекает текст контента."""
+    async def _fetch_article_data(self, url: str) -> tuple[str, list[str]]:
+        """Загружает полную страницу статьи и извлекает текст контента и изображения."""
         try:
             html = await self._fetch_page(url)
             if not html:
-                return ""
+                return "", []
             soup = BeautifulSoup(html, "html.parser")
             content_selector = self.SELECTORS.get("content", "")
+            images: list[str] = []
             if content_selector:
                 content_elem = soup.select_one(content_selector)
                 if content_elem:
-                    return self._clean_text(content_elem.get_text(" ", strip=True))
+                    # Extract images from article body
+                    article_img_selector = self.SELECTORS.get("article_images", "")
+                    if article_img_selector:
+                        for img in content_elem.select(article_img_selector):
+                            src = img.get("src") or img.get("data-src")
+                            if src and src.startswith("http"):
+                                images.append(src)
+                    else:
+                        for img in content_elem.find_all("img"):
+                            src = img.get("src") or img.get("data-src")
+                            if src and src.startswith("http"):
+                                images.append(src)
+                    return self._clean_text(content_elem.get_text(" ", strip=True)), images
             for element in soup(["script", "style", "nav", "header", "footer", "aside"]):
                 element.decompose()
             main = soup.select_one("article, main, .content")
-            return self._clean_text(main.get_text(" ", strip=True) if main else "")
+            return self._clean_text(main.get_text(" ", strip=True) if main else ""), []
         except Exception as e:
             logger.error(f"Error fetching article content from {url}: {e}", exc_info=True)
-            return ""
+            return "", []
 
     async def _parse_article(self, article_html: Tag) -> Optional[Post]:
         """Парсинг одной статьи."""
@@ -235,40 +264,77 @@ class StopGameParser(BaseParser):
             return None
 
         post_id = initial_data["id"]
+        link = initial_data["link"]
         try:
             title = initial_data["title"]
             images = [initial_data["image_url"]] if initial_data["image_url"] else []
             store_links = self._extract_store_links(article_html)
 
-            content = await self._fetch_article_content(initial_data["link"])
+            content, article_images = await self._fetch_article_data(link)
+            images = list(set(images + article_images))
 
-            if settings.ENABLE_LLM:
+            if settings.ENABLE_LLM and self.llm:
                 title, content, images, store_links = await self._update_post_with_llm_data(
-                    title, content, images, initial_data["link"], store_links,
+                    title, content, images, link, store_links,
+                )
+
+            if not images:
+                missing_data_logger.warning(
+                    "[StopGame] No image found | post_id=%s | url=%s", post_id, link
+                )
+
+            if not store_links:
+                missing_data_logger.warning(
+                    "[StopGame] No store links found | post_id=%s | title=%s | url=%s",
+                    post_id, title, link
+                )
+            elif "steam" not in store_links:
+                missing_data_logger.warning(
+                    "[StopGame] No Steam link found | post_id=%s | title=%s | stores=%s | url=%s",
+                    post_id, title, list(store_links.keys()), link
+                )
+
+            if len(content) < 50:
+                missing_data_logger.warning(
+                    "[StopGame] Content too short (%d chars) | post_id=%s | url=%s",
+                    len(content), post_id, link
                 )
 
             if len(content) > self.MAX_TEXT_LENGTH:
                 content = content[:self.MAX_TEXT_LENGTH] + "..."
 
+            game_info_raw = {}
+            if store_links:
+                try:
+                    infos = await self.price_service.get_all_info(store_links)
+                    game_info_raw = {
+                        store: (info.to_dict() if info and not isinstance(info, list) else
+                                [i.to_dict() if i else None for i in info] if isinstance(info, list) else None)
+                        for store, info in infos.items()
+                    }
+                except Exception as e:
+                    logger.warning("[StopGameParser] Failed to fetch game info: %s", e)
+
             metadata = PostMetadata(
                 store_links=store_links,
                 images=list(set(images)),
                 date=initial_data["date"],
+                game_info=game_info_raw,
             )
 
             return Post(
                 id=post_id,
                 title=title,
-                link=initial_data["link"],
+                link=link,
                 content=content,
                 metadata=metadata,
                 source="StopGame",
             )
         except ValidationError as e:
-            logger.error(f"Validation error for article {initial_data.get('link')}: {e}")
+            logger.error(f"Validation error for article {link}: {e}")
             return None
         except Exception as e:
-            logger.error(f"Error parsing article {initial_data.get('link')}: {e}", exc_info=True)
+            logger.error(f"Error parsing article {link}: {e}", exc_info=True)
             return None
 
     async def _fetch_full_page_text(self, post_link: str) -> str:

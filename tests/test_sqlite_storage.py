@@ -1,8 +1,42 @@
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from src.models.models import Post, PostMetadata
 from src.storage.sqlite_storage import SQLiteStorage
+
+
+def make_post(
+    post_id="123",
+    source="VGTimes",
+    title="Half-Life 3 Free",
+    store_links=None,
+    game_info=None,
+    images=None,
+    tags=None,
+    is_free=False,
+):
+    gi = game_info or {}
+    if is_free and not gi:
+        gi = {"steam": {"name": "HL3", "price": None, "original_price": None,
+                        "discount_pct": 0, "genre": None, "metacritic": None,
+                        "developer": None, "is_free": True}}
+    return Post(
+        id=post_id,
+        title=title,
+        link="https://vgtimes.ru/free/123-hl3.html",
+        content="Some content",
+        source=source,
+        metadata=PostMetadata(
+            store_links=store_links or {"steam": "https://store.steampowered.com/app/123/"},
+            game_info=gi,
+            images=images or ["https://example.com/img.jpg"],
+            tags=tags or ["игры"],
+            date=datetime(2026, 3, 13, 12, 0, tzinfo=timezone.utc),
+            rating=150,
+        ),
+    )
 
 
 class TestSQLiteStorage(unittest.IsolatedAsyncioTestCase):
@@ -65,6 +99,317 @@ class TestSQLiteStorage(unittest.IsolatedAsyncioTestCase):
         # Unknown ID should not be in cache
         result_unknown = await self.storage.is_processed("unknown_post")
         self.assertFalse(result_unknown)
+
+
+class TestDLQ(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.db_path = str(Path(__file__).parent / "test_dlq.db")
+        self.storage = SQLiteStorage(self.db_path)
+
+    async def asyncTearDown(self):
+        await self.storage.close()
+        if Path(self.db_path).exists():
+            os.remove(self.db_path)
+
+    async def test_save_failed_post(self):
+        await self.storage.save_failed_post("p1", '{"id": "p1"}', "send failed")
+        failed = await self.storage.get_failed_posts(max_retries=3)
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["id"], "p1")
+        self.assertEqual(failed[0]["retry_count"], 0)
+
+    async def test_get_failed_posts_filters_max_retries(self):
+        await self.storage.save_failed_post("p1", '{}', "err")
+        # Increment retry 3 times → should be excluded
+        await self.storage.increment_retry("p1")
+        await self.storage.increment_retry("p1")
+        await self.storage.increment_retry("p1")
+
+        failed = await self.storage.get_failed_posts(max_retries=3)
+        self.assertEqual(len(failed), 0)
+
+    async def test_increment_retry(self):
+        await self.storage.save_failed_post("p2", '{}', "err")
+        await self.storage.increment_retry("p2")
+
+        failed = await self.storage.get_failed_posts(max_retries=3)
+        self.assertEqual(failed[0]["retry_count"], 1)
+
+    async def test_delete_failed_post(self):
+        await self.storage.save_failed_post("p3", '{}', "err")
+        await self.storage.delete_failed_post("p3")
+        failed = await self.storage.get_failed_posts(max_retries=3)
+        self.assertEqual(len(failed), 0)
+
+
+class TestTitleDedup(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.db_path = str(Path(__file__).parent / "test_dedup.db")
+        self.storage = SQLiteStorage(self.db_path)
+
+    async def asyncTearDown(self):
+        await self.storage.close()
+        if Path(self.db_path).exists():
+            os.remove(self.db_path)
+
+    async def test_title_dedup_same_title(self):
+        """Одинаковый заголовок с двух источников — второй определяется как дубль."""
+        await self.storage.mark_title_seen("Half-Life 3 Free", "post_100", "VGTimes")
+
+        seen, orig_id, orig_source = await self.storage.is_title_seen("Half-Life 3 Free")
+        self.assertTrue(seen)
+        self.assertEqual(orig_id, "post_100")
+        self.assertEqual(orig_source, "VGTimes")
+
+    async def test_title_dedup_different_titles(self):
+        """Разные заголовки — оба проходят."""
+        await self.storage.mark_title_seen("Game A", "post_1", "Pikabu")
+
+        seen_a, _, _ = await self.storage.is_title_seen("Game A")
+        seen_b, _, _ = await self.storage.is_title_seen("Game B")
+
+        self.assertTrue(seen_a)
+        self.assertFalse(seen_b)
+
+    async def test_title_dedup_case_insensitive(self):
+        """Хэш нечувствителен к регистру."""
+        await self.storage.mark_title_seen("GAME X", "post_5", "StopGame")
+
+        seen, _, _ = await self.storage.is_title_seen("game x")
+        self.assertTrue(seen)
+
+    async def test_title_not_seen_initially(self):
+        seen, _, _ = await self.storage.is_title_seen("Brand New Title")
+        self.assertFalse(seen)
+
+
+class TestPostsLog(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.db_path = str(Path(__file__).parent / "test_posts_log.db")
+        self.storage = SQLiteStorage(self.db_path)
+
+    async def asyncTearDown(self):
+        await self.storage.close()
+        if Path(self.db_path).exists():
+            os.remove(self.db_path)
+
+    async def test_save_post_sent(self):
+        post = make_post()
+        await self.storage.save_post(post, sent=True)
+
+        conn = await self.storage._get_connection()
+        async with conn.execute("SELECT id, source, title, sent, has_steam FROM posts") as cur:
+            row = await cur.fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "123")
+        self.assertEqual(row[1], "VGTimes")
+        self.assertEqual(row[2], "Half-Life 3 Free")
+        self.assertEqual(row[3], 1)   # sent=True
+        self.assertEqual(row[4], 1)   # has_steam=True
+
+    async def test_save_post_not_sent(self):
+        post = make_post(post_id="456")
+        await self.storage.save_post(post, sent=False)
+
+        conn = await self.storage._get_connection()
+        async with conn.execute("SELECT sent FROM posts WHERE id='456'") as cur:
+            row = await cur.fetchone()
+        self.assertEqual(row[0], 0)
+
+    async def test_save_post_is_free_flag(self):
+        post = make_post(is_free=True)
+        await self.storage.save_post(post, sent=True)
+
+        conn = await self.storage._get_connection()
+        async with conn.execute("SELECT is_free FROM posts WHERE id='123'") as cur:
+            row = await cur.fetchone()
+        self.assertEqual(row[0], 1)
+
+    async def test_save_post_store_flags(self):
+        post = make_post(store_links={
+            "steam": "https://store.steampowered.com/app/1/",
+            "gog": "https://www.gog.com/game/test",
+        })
+        await self.storage.save_post(post, sent=True)
+
+        conn = await self.storage._get_connection()
+        async with conn.execute("SELECT has_steam, has_egs, has_gog, has_itch FROM posts") as cur:
+            row = await cur.fetchone()
+        self.assertEqual(row[0], 1)  # has_steam
+        self.assertEqual(row[1], 0)  # has_egs
+        self.assertEqual(row[2], 1)  # has_gog
+        self.assertEqual(row[3], 0)  # has_itch
+
+    async def test_save_post_upsert_updates_sent(self):
+        """Повторный save_post обновляет sent и game_info."""
+        post = make_post()
+        await self.storage.save_post(post, sent=False)
+        await self.storage.save_post(post, sent=True)
+
+        conn = await self.storage._get_connection()
+        async with conn.execute("SELECT COUNT(*), sent FROM posts WHERE id='123'") as cur:
+            row = await cur.fetchone()
+        self.assertEqual(row[0], 1)   # только одна запись
+        self.assertEqual(row[1], 1)   # sent обновлён
+
+    async def test_get_posts_stats(self):
+        await self.storage.save_post(make_post("1", source="VGTimes"), sent=True)
+        await self.storage.save_post(make_post("2", source="VGTimes"), sent=True)
+        await self.storage.save_post(make_post("3", source="Pikabu"), sent=False)
+        await self.storage.save_post(make_post("4", source="Pikabu", is_free=True), sent=True)
+
+        stats = await self.storage.get_posts_stats()
+
+        self.assertEqual(stats["total"], 4)
+        self.assertEqual(stats["sent"], 3)
+        self.assertEqual(stats["is_free"], 1)
+        self.assertEqual(stats["by_source"]["VGTimes"], 2)
+        self.assertEqual(stats["by_source"]["Pikabu"], 2)
+        self.assertEqual(stats["sent_by_source"]["VGTimes"], 2)
+        self.assertEqual(stats["sent_by_source"]["Pikabu"], 1)
+
+    async def test_get_posts_stats_empty(self):
+        stats = await self.storage.get_posts_stats()
+        self.assertEqual(stats["total"], 0)
+        self.assertEqual(stats["sent"], 0)
+
+
+class TestFuzzyTitleDedup(unittest.IsolatedAsyncioTestCase):
+    """Нечёткая дедупликация: 'Game X бесплатно' vs 'Game X стала бесплатной'."""
+
+    async def asyncSetUp(self):
+        self.db_path = str(Path(__file__).parent / "test_fuzzy_dedup.db")
+        self.storage = SQLiteStorage(self.db_path)
+
+    async def asyncTearDown(self):
+        await self.storage.close()
+        if Path(self.db_path).exists():
+            os.remove(self.db_path)
+
+    async def test_fuzzy_near_duplicate_detected(self):
+        """'Borderlands 3 бесплатно' и 'Borderlands 3 стала бесплатной' — дубль."""
+        await self.storage.mark_title_seen("Borderlands 3 бесплатно", "post_1", "VGTimes")
+
+        seen, orig_id, _ = await self.storage.is_title_seen("Borderlands 3 стала бесплатной")
+        self.assertTrue(seen)
+        self.assertEqual(orig_id, "post_1")
+
+    async def test_fuzzy_different_games_not_duplicate(self):
+        """'Game A бесплатно' и 'Game B бесплатно' — не дубли."""
+        await self.storage.mark_title_seen("Game A бесплатно", "post_1", "Pikabu")
+
+        seen, _, _ = await self.storage.is_title_seen("Game B бесплатно")
+        self.assertFalse(seen)
+
+    async def test_normalize_title(self):
+        """_normalize_title убирает шум и приводит к нижнему регистру."""
+        result = SQLiteStorage._normalize_title("Игра X бесплатно!")
+        self.assertNotIn("бесплатно", result)
+        self.assertIn("игра", result)
+        self.assertIn("x", result)
+
+    async def test_normalize_strips_free_word(self):
+        """'Game free' и 'Game' нормализуются одинаково."""
+        self.assertEqual(
+            SQLiteStorage._normalize_title("Super Game free"),
+            SQLiteStorage._normalize_title("Super Game"),
+        )
+
+
+class TestCleanupOldPosts(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.db_path = str(Path(__file__).parent / "test_cleanup.db")
+        self.storage = SQLiteStorage(self.db_path)
+
+    async def asyncTearDown(self):
+        await self.storage.close()
+        if Path(self.db_path).exists():
+            os.remove(self.db_path)
+
+    async def _insert_old_post(self, post_id: str, days_ago: int):
+        """Insert a sent post with sent_at = now - days_ago."""
+        conn = await self.storage._get_connection()
+        old_time = datetime.now() - timedelta(days=days_ago)
+        await conn.execute(
+            "INSERT OR IGNORE INTO posts "
+            "(id, source, title, link, content, stores, game_info, images, "
+            " post_date, rating, tags, has_steam, has_egs, has_gog, has_itch, is_free, sent, sent_at) "
+            "VALUES (?, 'Test', 'T', 'http://x.com', '', '[]', '{}', '[]', NULL, NULL, '[]', 0, 0, 0, 0, 0, 1, ?)",
+            (post_id, old_time),
+        )
+        await conn.commit()
+
+    async def test_cleanup_removes_old_posts(self):
+        await self._insert_old_post("old1", days_ago=100)
+        await self._insert_old_post("old2", days_ago=95)
+        await self._insert_old_post("new1", days_ago=5)
+
+        deleted = await self.storage.cleanup_old_posts(retention_days=90)
+
+        self.assertEqual(deleted, 2)
+        conn = await self.storage._get_connection()
+        async with conn.execute("SELECT COUNT(*) FROM posts") as cur:
+            count = (await cur.fetchone())[0]
+        self.assertEqual(count, 1)
+
+    async def test_cleanup_keeps_unsent_posts(self):
+        """Не удаляет посты с sent=0 даже если старые."""
+        conn = await self.storage._get_connection()
+        old_time = datetime.now() - timedelta(days=100)
+        await conn.execute(
+            "INSERT OR IGNORE INTO posts "
+            "(id, source, title, link, content, stores, game_info, images, "
+            " post_date, rating, tags, has_steam, has_egs, has_gog, has_itch, is_free, sent, sent_at) "
+            "VALUES ('unsent1', 'Test', 'T', 'http://x.com', '', '[]', '{}', '[]', NULL, NULL, '[]', 0, 0, 0, 0, 0, 0, ?)",
+            (old_time,),
+        )
+        await conn.commit()
+
+        deleted = await self.storage.cleanup_old_posts(retention_days=90)
+        self.assertEqual(deleted, 0)
+
+
+class TestGetRecentPosts(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.db_path = str(Path(__file__).parent / "test_recent.db")
+        self.storage = SQLiteStorage(self.db_path)
+
+    async def asyncTearDown(self):
+        await self.storage.close()
+        if Path(self.db_path).exists():
+            os.remove(self.db_path)
+
+    async def test_get_recent_posts_returns_sent(self):
+        post1 = make_post("p1", title="First Post")
+        post2 = make_post("p2", title="Second Post", source="Pikabu")
+        await self.storage.save_post(post1, sent=True)
+        await self.storage.save_post(post2, sent=True)
+
+        recent = await self.storage.get_recent_posts(limit=5)
+        ids = [r["id"] for r in recent]
+        self.assertIn("p1", ids)
+        self.assertIn("p2", ids)
+
+    async def test_get_recent_posts_limit(self):
+        for i in range(6):
+            await self.storage.save_post(make_post(str(i)), sent=True)
+
+        recent = await self.storage.get_recent_posts(limit=3)
+        self.assertEqual(len(recent), 3)
+
+    async def test_get_recent_posts_excludes_unsent(self):
+        await self.storage.save_post(make_post("sent1"), sent=True)
+        await self.storage.save_post(make_post("unsent1"), sent=False)
+
+        recent = await self.storage.get_recent_posts(limit=10)
+        ids = [r["id"] for r in recent]
+        self.assertIn("sent1", ids)
+        self.assertNotIn("unsent1", ids)
+
+    async def test_get_recent_posts_empty(self):
+        recent = await self.storage.get_recent_posts()
+        self.assertEqual(recent, [])
 
 
 if __name__ == "__main__":

@@ -113,5 +113,37 @@ class TestPikabuParser(unittest.TestCase):
         """
         self.assertDictEqual(self.parser._extract_store_links(text_with_invalid_links), {})
 
+class TestPikabuPagination(unittest.TestCase):
+    @patch("src.config.config.settings.PARSERS_CONFIG", {
+        "pikabu": {
+            "request_timeout": 10,
+            "max_text_length": 1000,
+            "valid_image_extensions": [".png", ".jpg"],
+            "rate_limit_delay": 1,
+            "initial_pages": 3,
+            "target_urls": "https://pikabu.ru/community/steam",
+            "selectors": {"articles": ".a", "title": ".t", "link": ".l", "content": ".c", "rating": ".r", "date": ".d", "tags": ".tg", "images": [], "stats": ".st"},
+            "stores": {},
+        },
+    })
+    def setUp(self):
+        self.parser = PikabuParser()
+
+    def test_build_page_urls_single(self):
+        urls = self.parser._build_page_urls(1)
+        self.assertEqual(urls, ["https://pikabu.ru/community/steam"])
+
+    def test_build_page_urls_multi(self):
+        urls = self.parser._build_page_urls(3)
+        self.assertEqual(urls, [
+            "https://pikabu.ru/community/steam",
+            "https://pikabu.ru/community/steam/hot/2",
+            "https://pikabu.ru/community/steam/hot/3",
+        ])
+
+    def test_is_first_run_defaults_false(self):
+        self.assertFalse(self.parser._is_first_run)
+
+
 if __name__ == "__main__":
     unittest.main()

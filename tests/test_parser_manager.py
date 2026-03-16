@@ -30,6 +30,7 @@ class TestParserManager(unittest.IsolatedAsyncioTestCase):
 
         self.mock_storage = AsyncMock()
         self.mock_storage.is_processed = AsyncMock(return_value=False)
+        self.mock_storage.get_posts_stats = AsyncMock(return_value={"total": 1})
 
         self.parsers = [self.mock_vgtimes, self.mock_pikabu, self.mock_stopgame]
         self.manager = ParserManager(parsers=self.parsers, storage=self.mock_storage)

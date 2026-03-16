@@ -19,6 +19,7 @@ STEAM_SUCCESS_RESPONSE = {
             "genres": [{"description": "Action"}, {"description": "RPG"}],
             "metacritic": {"score": 85},
             "developers": ["Test Dev Studio"],
+            "review_score_desc": "Дуже позитивні",
         },
     },
 }
@@ -84,6 +85,7 @@ class TestSteamInfo(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info.metacritic, 85)
         self.assertEqual(info.developer, "Test Dev Studio")
         self.assertFalse(info.is_free)
+        self.assertEqual(info.review_score, "Дуже позитивні")
 
     async def test_get_steam_info_not_found(self):
         """app_id не найден → None."""
@@ -103,6 +105,11 @@ class TestSteamInfo(unittest.IsolatedAsyncioTestCase):
 class TestEGSInfo(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.service = PriceService()
+
+    async def test_get_egs_info_invalid_url(self):
+        """URL без /p/ slug → None без HTTP-запроса."""
+        info = await self.service.get_egs_info("https://store.epicgames.com/ru/free-games")
+        self.assertIsNone(info)
 
     async def test_get_egs_info_free_game(self):
         """EGS free game промо возвращает бесплатную игру."""
@@ -124,6 +131,71 @@ class TestEGSInfo(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(info.is_free)
         self.assertEqual(info.genre, "Adventure")
         self.assertEqual(info.developer, "Indie Dev")
+
+
+GOG_FREE_RESPONSE = {
+    "products": [
+        {
+            "slug": "some-free-game",
+            "title": "Some Free Game",
+            "price": {"amount": "0"},
+            "genres": ["Action", "RPG"],
+            "developer": "GOG Dev",
+        }
+    ]
+}
+
+
+class TestGOGInfo(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.service = PriceService()
+
+    def _make_mock_session(self, json_data):
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value=json_data)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        return mock_session
+
+    async def test_get_gog_info_free_game(self):
+        """GOG free game найден → GameInfo с is_free=True."""
+        mock_session = self._make_mock_session(GOG_FREE_RESPONSE)
+        with patch("src.services.price_service.aiohttp.ClientSession", return_value=mock_session):
+            info = await self.service.get_gog_info("https://www.gog.com/game/some-free-game")
+
+        self.assertIsNotNone(info)
+        self.assertTrue(info.is_free)
+        self.assertEqual(info.name, "Some Free Game")
+        self.assertEqual(info.developer, "GOG Dev")
+
+    async def test_get_gog_info_slug_not_found(self):
+        """Игра не в списке бесплатных → None."""
+        mock_session = self._make_mock_session(GOG_FREE_RESPONSE)
+        with patch("src.services.price_service.aiohttp.ClientSession", return_value=mock_session):
+            info = await self.service.get_gog_info("https://www.gog.com/game/unknown-game")
+
+        self.assertIsNone(info)
+
+    async def test_get_gog_info_bad_url(self):
+        """URL без /game/ slug → None без HTTP-запроса."""
+        info = await self.service.get_gog_info("https://www.gog.com/en/games")
+        self.assertIsNone(info)
+
+    async def test_gog_cache_reused(self):
+        """Второй вызов использует TTL-кэш, не делая HTTP-запрос."""
+        mock_session = self._make_mock_session(GOG_FREE_RESPONSE)
+        with patch("src.services.price_service.aiohttp.ClientSession", return_value=mock_session):
+            await self.service.get_gog_info("https://www.gog.com/game/some-free-game")
+            await self.service.get_gog_info("https://www.gog.com/game/some-free-game")
+
+        # With TTL cache, session.get should only be called once
+        self.assertEqual(mock_session.get.call_count, 1)
 
 
 class TestGetAllInfo(unittest.IsolatedAsyncioTestCase):

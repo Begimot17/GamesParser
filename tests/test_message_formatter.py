@@ -6,6 +6,7 @@ import pytest
 
 from src.bot.message_formatter import STORE_DISPLAY_NAMES, STORE_EMOJIS, MessageFormatter
 from src.models.models import Post, PostMetadata
+from src.services.price_service import GameInfo
 
 
 def make_post(
@@ -18,6 +19,7 @@ def make_post(
     tags=None,
     views=None,
     date=None,
+    game_info=None,
 ):
     metadata = PostMetadata(
         rating=rating,
@@ -25,6 +27,7 @@ def make_post(
         tags=tags or [],
         views=views,
         date=date,
+        game_info=game_info or {},
     )
     return Post(id="123", title=title, link=link, content=content, metadata=metadata, source=source)
 
@@ -35,12 +38,12 @@ def formatter():
 
 
 class TestFormatMessage:
-    def test_format_message_with_source(self, formatter):
+    def test_format_message_footer_with_source(self, formatter):
         post = make_post(source="Pikabu")
         result = formatter.format_message(post)
-        assert "<i>Источник: Pikabu</i>" in result
+        assert "🤖 GamesParser | Pikabu" in result
 
-    def test_format_message_no_source(self, formatter):
+    def test_format_message_no_source_line(self, formatter):
         post = make_post(source=None)
         result = formatter.format_message(post)
         assert "Источник:" not in result
@@ -67,8 +70,7 @@ class TestFormatMessage:
         long_content = "А" * 700
         post = make_post(content=long_content)
         result = formatter.format_message(post)
-        assert "..." in result
-        # Content section should not exceed 600 chars + "..."
+        assert "…" in result  # smart truncation uses unicode ellipsis
         assert len(result) < 5000  # sanity check
 
     def test_format_message_html_escaping(self, formatter):
@@ -116,3 +118,75 @@ class TestFormatMessage:
     def test_store_emojis_mapping(self, formatter):
         assert STORE_EMOJIS["steam"] == "🎮"
         assert STORE_EMOJIS["epicgames"] == "🟣"
+
+
+class TestTruncateContent:
+    def test_truncate_short_text_unchanged(self, formatter):
+        text = "Short text." * 10  # ~110 chars
+        assert formatter._truncate_content(text, max_len=600) == text
+
+    def test_truncate_at_sentence_boundary(self, formatter):
+        # "." is at position 450, which is within the search range [400, 600]
+        sentence = "A" * 450 + ". " + "B" * 248  # total 700 chars
+        result = formatter._truncate_content(sentence, max_len=600)
+        assert result.endswith("…")
+        assert len(result) <= 601  # boundary + ellipsis
+        # Should cut after the "." at position 450
+        assert result.endswith(".…")
+
+    def test_truncate_fallback_no_boundary(self, formatter):
+        # No sentence boundary in range — hard cut
+        text = "A" * 700
+        result = formatter._truncate_content(text, max_len=600)
+        assert result == "A" * 600 + "…"
+
+    def test_format_message_content_truncated_smartly(self, formatter):
+        # 500 A's + ". " + 300 B's → should cut after "."
+        content = "A" * 498 + ". " + "B" * 300
+        post = make_post(content=content)
+        result = formatter.format_message(post)
+        assert "B" * 50 not in result  # the B section should be cut
+
+
+class TestFreeTag:
+    def test_free_tag_added_when_is_free(self, formatter):
+        game_info = {"steam": GameInfo(name="Free Game", is_free=True).to_dict()}
+        post = make_post(store_links={"steam": "https://store.steampowered.com/app/123/"}, game_info=game_info)
+        result = formatter.format_message(post)
+        assert "#free" in result
+
+    def test_free_tag_not_added_when_not_free(self, formatter):
+        game_info = {"steam": GameInfo(name="Paid Game", is_free=False, price="199 ₴").to_dict()}
+        post = make_post(store_links={"steam": "https://store.steampowered.com/app/123/"}, game_info=game_info)
+        result = formatter.format_message(post)
+        assert "#free" not in result
+
+class TestReviewScore:
+    def test_review_score_shown_in_game_info(self, formatter):
+        info = GameInfo(name="Game", is_free=True, review_score="Переважно позитивні")
+        line = formatter._format_game_info_line(info)
+        assert "💬" in line
+        assert "Переважно позитивні" in line
+
+    def test_review_score_absent_when_none(self, formatter):
+        info = GameInfo(name="Game", is_free=True, review_score=None)
+        line = formatter._format_game_info_line(info)
+        assert "💬" not in line
+
+    def test_review_score_html_escaped(self, formatter):
+        info = GameInfo(name="Game", is_free=True, review_score="<Good> & 'Great'")
+        line = formatter._format_game_info_line(info)
+        assert "&lt;Good&gt;" in line
+        assert "&amp;" in line
+
+
+class TestFreeTagNotDuplicated:
+    def test_free_tag_not_duplicated_when_already_in_tags(self, formatter):
+        game_info = {"steam": GameInfo(name="Free Game", is_free=True).to_dict()}
+        post = make_post(
+            store_links={"steam": "https://store.steampowered.com/app/123/"},
+            game_info=game_info,
+            tags=["free", "игры"],
+        )
+        result = formatter.format_message(post)
+        assert result.count("#free") == 1

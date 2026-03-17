@@ -1,7 +1,6 @@
-"""Tests for SteamCatalogService (SteamSpy-backed)."""
+"""Tests for SteamCatalogService (Steam Store Search HTML backed)."""
 
 import asyncio
-from unittest.mock import MagicMock
 
 from src.services.steam_catalog_service import SteamCatalogService
 
@@ -10,181 +9,142 @@ def _service():
     return SteamCatalogService()
 
 
-# ── Mock helpers ──────────────────────────────────────────────────────────────
+# ── HTML mock helpers ──────────────────────────────────────────────────────────
 
-STEAMSPY_PAGE_0 = {
-    "730": {"appid": 730, "name": "Counter-Strike 2", "price": "0", "initialprice": "0", "discount": "0"},
-    "292030": {"appid": 292030, "name": "The Witcher 3", "price": "999", "initialprice": "4999", "discount": "80"},
-    "1091500": {"appid": 1091500, "name": "Cyberpunk 2077", "price": "4999", "initialprice": "4999", "discount": "0"},
-}
-
-STEAMSPY_PAGE_1 = {
-    "570": {"appid": 570, "name": "Dota 2", "price": "0", "initialprice": "0", "discount": "0"},
-}
-
-STEAMSPY_PAGE_2 = {}  # empty → end of pagination
-
-
-class MockResponse:
-    def __init__(self, json_data, status=200):
-        self._json = json_data
-        self.status = status
-
-    async def json(self, content_type=None):
-        return self._json
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
-
-
-# ── _parse_price tests ────────────────────────────────────────────────────────
-
-def test_parse_price_paid():
-    result = SteamCatalogService._parse_price(
-        {"name": "Witcher 3", "price": "999", "initialprice": "4999", "discount": "80"}
+def _make_row(appid: int, name: str, price_final: int, discount: int) -> str:
+    # Mirrors real Steam HTML: <a href="...app/APPID/..."> comes first,
+    # followed by class="search_result_row", then price attributes inside.
+    return (
+        f'<a href="https://store.steampowered.com/app/{appid}/" '
+        f'data-ds-appid="{appid}" '
+        f'class="search_result_row ds_collapse_flag">'
+        f'<span class="title">{name}</span>'
+        f'<div data-price-final="{price_final}" '
+        f'data-bundlediscount="0" data-discount="{discount}"></div>'
+        f'</a>'
     )
-    assert result["price_uah"] == 999
-    assert result["original_price_uah"] == 4999
-    assert result["discount_pct"] == 80
-    assert result["name"] == "Witcher 3"
 
 
-def test_parse_price_always_free():
-    result = SteamCatalogService._parse_price(
-        {"name": "CS2", "price": "0", "initialprice": "0", "discount": "0"}
-    )
-    assert result["price_uah"] == 0
-    assert result["original_price_uah"] is None   # F2P → None
-    assert result["discount_pct"] == 0
+def _make_html(rows: list, total: int) -> str:
+    rows_html = "".join(_make_row(r["appid"], r["name"], r["price_final"], r["discount"]) for r in rows)
+    return f'{total:,} results match your search.\n{rows_html}'
 
 
-def test_parse_price_became_free():
-    result = SteamCatalogService._parse_price(
-        {"name": "Some Game", "price": "0", "initialprice": "4999", "discount": "100"}
-    )
-    assert result["price_uah"] == 0
-    assert result["original_price_uah"] == 4999   # had a price → keep
-    assert result["discount_pct"] == 100
+ROWS_PAGE_0 = [
+    {"appid": 292030, "name": "The Witcher 3", "price_final": 49900, "discount": 80},
+    {"appid": 1091500, "name": "Cyberpunk 2077", "price_final": 124900, "discount": 50},
+]
+
+ROWS_PAGE_1 = [
+    {"appid": 570, "name": "Dota 2", "price_final": 0, "discount": 0},
+]
 
 
-def test_parse_price_missing_fields():
-    result = SteamCatalogService._parse_price({"name": "X"})
-    assert result["price_uah"] == 0
-    assert result["original_price_uah"] is None
-    assert result["discount_pct"] == 0
+def test_parse_total():
+    assert SteamCatalogService._parse_total("7,896 results match your search.") == 7896
 
 
-# ── get_app_list tests ────────────────────────────────────────────────────────
-
-def test_get_app_list():
-    service = _service()
-    mock_session = MagicMock()
-    mock_session.closed = False
-    mock_session.get.return_value = MockResponse(STEAMSPY_PAGE_0)
-    service._session = mock_session
-
-    apps = asyncio.run(service.get_app_list())
-    assert len(apps) == 3
-    appids = {a["appid"] for a in apps}
-    assert 730 in appids
-    assert 292030 in appids
+def test_parse_total_not_found():
+    assert SteamCatalogService._parse_total("no results here") == 0
 
 
-def test_get_app_list_error():
-    service = _service()
-    mock_session = MagicMock()
-    mock_session.closed = False
-    mock_session.get.return_value = MockResponse({}, status=500)
-    service._session = mock_session
+def test_parse_results_html_paid_game():
+    html = _make_html(ROWS_PAGE_0[:1], total=1)
+    results = SteamCatalogService._parse_results_html(html)
+    assert len(results) == 1
+    r = results[0]
+    assert r["appid"] == 292030
+    assert r["name"] == "The Witcher 3"
+    assert r["price_uah"] == 49900
+    assert r["discount_pct"] == 80
+    assert r["original_price_uah"] == 249500  # 49900*100/20
 
-    apps = asyncio.run(service.get_app_list())
-    assert apps == []
+
+def test_parse_results_html_zero_price():
+    html = _make_html(ROWS_PAGE_1, total=1)
+    results = SteamCatalogService._parse_results_html(html)
+    assert len(results) == 1
+    r = results[0]
+    assert r["price_uah"] == 0
+    assert r["original_price_uah"] is None
 
 
-# ── scan_all_prices tests ─────────────────────────────────────────────────────
+def test_parse_results_html_empty():
+    assert SteamCatalogService._parse_results_html("") == []
+
+
+def test_parse_results_html_multiple():
+    html = _make_html(ROWS_PAGE_0, total=2)
+    results = SteamCatalogService._parse_results_html(html)
+    assert len(results) == 2
+    appids = {r["appid"] for r in results}
+    assert 292030 in appids and 1091500 in appids
+
+
+def test_parse_results_html_original_calculated():
+    row = {"appid": 1, "name": "Game", "price_final": 70000, "discount": 30}
+    html = _make_html([row], total=1)
+    results = SteamCatalogService._parse_results_html(html)
+    assert results[0]["original_price_uah"] == 100000  # 70000*100/70
+
 
 def test_scan_all_prices_paginates():
     service = _service()
-    pages = [STEAMSPY_PAGE_0, STEAMSPY_PAGE_1, STEAMSPY_PAGE_2]
-
-    call_count = [0]
-
-    async def mock_fetch_page(page: int) -> dict:
-        call_count[0] += 1
-        return pages[page] if page < len(pages) else {}
-
+    responses = {
+        0: _make_html(ROWS_PAGE_0, total=200),
+        100: _make_html(ROWS_PAGE_1, total=200),
+        200: "",
+    }
+    async def mock_fetch_page(start): return responses.get(start, "")
     service._fetch_page = mock_fetch_page
-
     results = {}
-
-    def cb(appid, data):
-        results[appid] = data
-
-    # Patch asyncio.sleep to skip waits
-    async def fast_run():
+    def cb(appid, data): results[appid] = data
+    async def run():
         import unittest.mock as m
         with m.patch("asyncio.sleep"):
             return await service.scan_all_prices(cb)
-
-    total = asyncio.run(fast_run())
-
-    assert total == 4  # 3 from page 0, 1 from page 1
-    assert 730 in results
-    assert 292030 in results
-    assert 570 in results
-
-
-def test_scan_all_prices_f2p_has_none_original():
-    service = _service()
-
-    async def mock_fetch_page(page: int) -> dict:
-        if page == 0:
-            return STEAMSPY_PAGE_0
-        return {}
-
-    service._fetch_page = mock_fetch_page
-
-    results = {}
-
-    def cb(appid, data):
-        results[appid] = data
-
-    async def fast_run():
-        import unittest.mock as m
-        with m.patch("asyncio.sleep"):
-            return await service.scan_all_prices(cb)
-
-    asyncio.run(fast_run())
-
-    # CS2 (730) is F2P → original_price_uah must be None
-    assert results[730]["original_price_uah"] is None
-    # Witcher 3 has a price
-    assert results[292030]["original_price_uah"] == 4999
-
-
-def test_scan_all_prices_stops_on_error():
-    service = _service()
-
-    async def mock_fetch_page(page: int) -> dict:
-        if page == 0:
-            return STEAMSPY_PAGE_0
-        raise RuntimeError("network error")
-
-    service._fetch_page = mock_fetch_page
-
-    results = {}
-
-    def cb(appid, data):
-        results[appid] = data
-
-    async def fast_run():
-        import unittest.mock as m
-        with m.patch("asyncio.sleep"):
-            return await service.scan_all_prices(cb)
-
-    total = asyncio.run(fast_run())
-    # Only page 0 processed, error on page 1 stops scan
+    total = asyncio.run(run())
     assert total == 3
+    assert 292030 in results and 570 in results
+
+
+def test_scan_all_prices_uah():
+    service = _service()
+    async def mock_fetch_page(start): return _make_html(ROWS_PAGE_0[:1], total=1) if start == 0 else ""
+    service._fetch_page = mock_fetch_page
+    results = {}
+    def cb(appid, data): results[appid] = data
+    async def run():
+        import unittest.mock as m
+        with m.patch("asyncio.sleep"):
+            return await service.scan_all_prices(cb)
+    asyncio.run(run())
+    assert results[292030]["price_uah"] == 49900
+    assert results[292030]["discount_pct"] == 80
+    assert results[292030]["original_price_uah"] == 249500
+
+
+def test_scan_stops_on_error():
+    service = _service()
+    async def mock_fetch_page(start):
+        if start == 0: return _make_html(ROWS_PAGE_0, total=200)
+        raise RuntimeError("err")
+    service._fetch_page = mock_fetch_page
+    results = {}
+    def cb(appid, data): results[appid] = data
+    async def run():
+        import unittest.mock as m
+        with m.patch("asyncio.sleep"):
+            return await service.scan_all_prices(cb)
+    total = asyncio.run(run())
+    assert total == 2
+
+
+def test_scan_stops_empty():
+    service = _service()
+    async def mock_fetch_page(start): return ""
+    service._fetch_page = mock_fetch_page
+    results = {}
+    def cb(appid, data): results[appid] = data
+    total = asyncio.run(service.scan_all_prices(cb))
+    assert total == 0 and results == {}

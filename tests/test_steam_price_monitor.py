@@ -14,11 +14,13 @@ def make_monitor():
     storage.get_steam_game = AsyncMock(return_value=None)
     storage.update_steam_notification = AsyncMock()
     storage._get_connection = AsyncMock()
+    storage.find_egs_game_by_name = AsyncMock(return_value=None)
 
     bot = MagicMock()
     bot.send_message = AsyncMock(return_value=True)
 
     monitor = SteamPriceMonitor(storage=storage, bot=bot)
+    monitor.price_service.get_steam_info = AsyncMock(return_value=None)
     return monitor
 
 
@@ -53,11 +55,20 @@ def test_big_discount():
     assert result == "big_discount"
 
 
-def test_big_discount_below_threshold():
+def test_big_discount_below_min_threshold():
+    # 49% discount is below the lowest possible threshold (50%) → _detect_change returns None
+    monitor = make_monitor()
+    stored = _stored(price_uah=49900, original_price_uah=49900, notified_price_uah=49900)
+    result = monitor._detect_change(stored, new_price=25449, new_original=49900, new_discount=49)
+    assert result is None
+
+
+def test_big_discount_at_min_threshold_passes_detect_change():
+    # 50% discount passes the pre-filter in _detect_change (quality gate is checked later)
     monitor = make_monitor()
     stored = _stored(price_uah=49900, original_price_uah=49900, notified_price_uah=49900)
     result = monitor._detect_change(stored, new_price=24950, new_original=49900, new_discount=50)
-    assert result is None
+    assert result == "big_discount"
 
 
 def test_big_discount_already_notified_same_price():
@@ -105,7 +116,7 @@ def test_became_free_format():
         game_info=None,
     )
     assert "безкоштовною" in msg
-    assert "$49.99" in msg
+    assert "₴49" in msg  # UAH price (4999 kopecks = ₴49)
     assert "#free" in msg
     assert "#steam" in msg
     assert "Test Game" in msg
@@ -129,6 +140,7 @@ def test_big_discount_format():
     assert "#знижка" in msg
     assert "#steam" in msg
     assert "Test Game" in msg
+    assert "₴" in msg  # UAH symbol
 
 
 def test_game_info_included():
@@ -148,7 +160,6 @@ def test_game_info_included():
     )
     assert "Action, RPG" in msg
     assert "Metacritic: 88" in msg
-    assert "Dev Co" in msg
 
 
 def test_html_escaped():
@@ -222,3 +233,158 @@ def test_process_result_no_stored_game():
     result = asyncio.run(monitor._process_result(730, "Some Game", price_data))
 
     assert result is False
+
+
+# ── _compute_quality_score tests ──────────────────────────────────────────────
+
+def test_quality_score_none_game_info():
+    # No game_info → fallback score 15
+    assert SteamPriceMonitor._compute_quality_score(None) == 15
+
+
+def test_quality_score_overwhelmingly_positive():
+    from src.services.price_service import GameInfo
+    info = GameInfo(review_score="Overwhelmingly Positive", recommendations_total=200_000, metacritic=86)
+    score = SteamPriceMonitor._compute_quality_score(info)
+    assert score == 50 + 30 + 20  # 100
+
+
+def test_quality_score_very_positive_high_recs():
+    from src.services.price_service import GameInfo
+    # Very Positive (40) + 200k recs (30) + Metacritic 86 (20) = 90 → threshold 50%
+    info = GameInfo(review_score="Very Positive", recommendations_total=200_000, metacritic=86)
+    score = SteamPriceMonitor._compute_quality_score(info)
+    assert score == 90
+
+
+def test_quality_score_mostly_positive_low_recs():
+    from src.services.price_service import GameInfo
+    # Mostly Positive (25) + 5k recs (12) + no metacritic = 37 → threshold 75%
+    info = GameInfo(review_score="Mostly Positive", recommendations_total=5_000)
+    score = SteamPriceMonitor._compute_quality_score(info)
+    assert score == 37
+
+
+def test_quality_score_no_reviews():
+    from src.services.price_service import GameInfo
+    # No review_score, 50 recs (<100) → 0+0+0 = 0 → threshold None (suppress)
+    info = GameInfo(recommendations_total=50)
+    score = SteamPriceMonitor._compute_quality_score(info)
+    assert score == 0
+
+
+def test_quality_score_mixed():
+    from src.services.price_service import GameInfo
+    info = GameInfo(review_score="Mixed", recommendations_total=0)
+    score = SteamPriceMonitor._compute_quality_score(info)
+    assert score == 5
+
+
+def test_quality_score_negative_review():
+    from src.services.price_service import GameInfo
+    info = GameInfo(review_score="Mostly Negative", recommendations_total=500, metacritic=45)
+    score = SteamPriceMonitor._compute_quality_score(info)
+    assert score == 0 + 5 + 0  # 5
+
+
+# ── _quality_adjusted_threshold tests ─────────────────────────────────────────
+
+def test_threshold_score_80_plus():
+    monitor = make_monitor()
+    from src.services.price_service import GameInfo
+    info = GameInfo(review_score="Overwhelmingly Positive", recommendations_total=200_000, metacritic=86)
+    assert monitor._quality_adjusted_threshold(info) == 50
+
+
+def test_threshold_score_below_10_suppressed():
+    monitor = make_monitor()
+    from src.services.price_service import GameInfo
+    info = GameInfo(recommendations_total=50)  # score=5
+    assert monitor._quality_adjusted_threshold(info) is None
+
+
+def test_threshold_score_10_to_19():
+    monitor = make_monitor()
+    from src.services.price_service import GameInfo
+    # score=15 (fallback): threshold == STEAM_DISCOUNT_THRESHOLD (90)
+    assert monitor._quality_adjusted_threshold(None) == monitor._discount_threshold
+
+
+# ── quality gate integration in _process_result ───────────────────────────────
+
+def test_process_result_suppressed_low_quality():
+    """70% discount + score < 10 → alert suppressed."""
+    from src.services.price_service import GameInfo
+    monitor = make_monitor()
+
+    stored = {
+        "appid": 999,
+        "name": "Unknown Asset",
+        "price_uah": 49900,
+        "original_price_uah": 49900,
+        "notified_price_uah": 49900,
+        "discount_pct": 0,
+    }
+    monitor.storage.get_steam_game = AsyncMock(return_value=stored)
+    monitor.price_service.get_steam_info = AsyncMock(
+        return_value=GameInfo(recommendations_total=50)  # score=5 → threshold None
+    )
+
+    price_data = {"price_uah": 14970, "original_price_uah": 49900, "discount_pct": 70}
+    result = asyncio.run(monitor._process_result(999, "Unknown Asset", price_data))
+
+    assert result is False
+    monitor.storage.update_steam_notification.assert_not_called()
+
+
+def test_process_result_became_free_bypasses_quality():
+    """became_free alert bypasses quality gate regardless of score."""
+    from src.services.price_service import GameInfo
+    monitor = make_monitor()
+
+    stored = {
+        "appid": 999,
+        "name": "Unknown Asset",
+        "price_uah": 49900,
+        "original_price_uah": 49900,
+        "notified_price_uah": 49900,
+        "discount_pct": 0,
+    }
+    monitor.storage.get_steam_game = AsyncMock(return_value=stored)
+    monitor.price_service.get_steam_info = AsyncMock(
+        return_value=GameInfo(recommendations_total=0)  # score=0 → would be suppressed
+    )
+
+    price_data = {"price_uah": 0, "original_price_uah": 49900, "discount_pct": 100}
+    result = asyncio.run(monitor._process_result(999, "Unknown Asset", price_data))
+
+    assert result is True
+    monitor.storage.update_steam_notification.assert_called_once_with(999, 0)
+
+
+def test_process_result_high_quality_50pct_passes():
+    """Very Positive game with 200k recs and Metacritic 86 → score≥80 → threshold 50% → 50% passes."""
+    from src.services.price_service import GameInfo
+    monitor = make_monitor()
+
+    stored = {
+        "appid": 1091500,
+        "name": "Cyberpunk 2077",
+        "price_uah": 139900,
+        "original_price_uah": 139900,
+        "notified_price_uah": 139900,
+        "discount_pct": 0,
+    }
+    monitor.storage.get_steam_game = AsyncMock(return_value=stored)
+    monitor.price_service.get_steam_info = AsyncMock(
+        return_value=GameInfo(
+            review_score="Very Positive",
+            recommendations_total=200_000,
+            metacritic=86,
+        )
+    )
+
+    price_data = {"price_uah": 69950, "original_price_uah": 139900, "discount_pct": 50}
+    result = asyncio.run(monitor._process_result(1091500, "Cyberpunk 2077", price_data))
+
+    assert result is True

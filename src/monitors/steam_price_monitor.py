@@ -28,6 +28,7 @@ class SteamPriceMonitor:
         self.price_service = PriceService()
         self._scan_interval = settings.STEAM_SCAN_INTERVAL
         self._discount_threshold = settings.STEAM_DISCOUNT_THRESHOLD
+        self._min_discount_threshold = settings.STEAM_MIN_DISCOUNT_THRESHOLD
 
     async def run(self) -> None:
         """Main loop: run a scan cycle, then sleep for STEAM_SCAN_INTERVAL seconds."""
@@ -115,6 +116,16 @@ class SteamPriceMonitor:
             logger.debug("[SteamMonitor] Could not enrich game info for %d: %s", appid, e)
             game_info = None
 
+        # Quality gate: apply dynamic threshold for big_discount alerts (became_free always passes)
+        if alert_type == "big_discount":
+            threshold = self._quality_adjusted_threshold(game_info)
+            if threshold is None or new_discount < threshold:
+                logger.debug(
+                    "[SteamMonitor] Suppressed appid=%d discount=%d%% score=%d threshold=%s",
+                    appid, new_discount, self._compute_quality_score(game_info), threshold,
+                )
+                return False
+
         # Cross-store enrichment: check if EGS had a recent alert for this game
         cross_store_data = None
         if display_name:
@@ -131,12 +142,19 @@ class SteamPriceMonitor:
                             cross_store_data = {
                                 "store": "egs",
                                 "url": egs_row.get("url", ""),
-                                "price_usd": egs_row.get("price_usd"),
-                                "original_price_usd": egs_row.get("original_price_usd"),
+                                "price_uah": egs_row.get("price_uah"),
+                                "original_price_uah": egs_row.get("original_price_uah"),
                                 "discount_pct": egs_row.get("discount_pct"),
                             }
             except Exception as e:
                 logger.debug("[SteamMonitor] Cross-store lookup failed for %r: %s", display_name, e)
+
+        # Get header image: from game_info or fallback to CDN URL
+        header_image = (
+            (game_info.header_image if game_info else None)
+            or f"https://cdn.akamai.steamstatic.com/steam/apps/{appid}/header.jpg"
+        )
+        short_description = game_info.short_description if game_info else None
 
         old_price = (stored or {}).get("price_uah")
         message = self.formatter.format_price_alert(
@@ -150,9 +168,10 @@ class SteamPriceMonitor:
             game_info=game_info,
             store="steam",
             cross_store_data=cross_store_data,
+            short_description=short_description,
         )
 
-        success = await self.bot.send_message(message)
+        success = await self.bot.send_message(message, images=[header_image])
         if success:
             await self.storage.update_steam_notification(appid, new_price)
             logger.info(
@@ -160,6 +179,66 @@ class SteamPriceMonitor:
                 appid, display_name, alert_type, old_price, new_price,
             )
         return success
+
+    @staticmethod
+    def _compute_quality_score(game_info) -> int:
+        """Return quality score 0–100 based on review_score, recommendations_total, metacritic."""
+        if game_info is None:
+            return 15  # fallback: treated as "unknown", threshold 90%
+
+        score = 0
+
+        # review_score: up to 50 points
+        review_map = {
+            "overwhelmingly positive": 50,
+            "very positive": 40,
+            "mostly positive": 25,
+            "positive": 20,
+            "mixed": 5,
+        }
+        rs = (game_info.review_score or "").lower()
+        score += review_map.get(rs, 0)  # negatives and unknowns → 0
+
+        # recommendations_total: up to 30 points
+        recs = game_info.recommendations_total or 0
+        if recs >= 100_000:
+            score += 30
+        elif recs >= 50_000:
+            score += 25
+        elif recs >= 10_000:
+            score += 20
+        elif recs >= 1_000:
+            score += 12
+        elif recs >= 100:
+            score += 5
+
+        # metacritic: up to 20 points
+        mc = game_info.metacritic or 0
+        if mc >= 85:
+            score += 20
+        elif mc >= 75:
+            score += 15
+        elif mc >= 65:
+            score += 10
+        elif mc >= 50:
+            score += 5
+
+        return score
+
+    def _quality_adjusted_threshold(self, game_info) -> Optional[int]:
+        """Return minimum discount % required for an alert, or None to suppress entirely."""
+        score = self._compute_quality_score(game_info)
+        if score >= 80:
+            return 50
+        if score >= 60:
+            return 65
+        if score >= 40:
+            return 75
+        if score >= 20:
+            return 85
+        if score >= 10:
+            return self._discount_threshold  # 90%
+        return None  # score < 10 → suppress
 
     def _detect_change(
         self,
@@ -192,7 +271,7 @@ class SteamPriceMonitor:
                 return "became_free"
             return None
 
-        if new_discount >= self._discount_threshold and new_original > 0:
+        if new_discount >= self._min_discount_threshold and new_original > 0:
             if notified_price != new_price:
                 return "big_discount"
             return None

@@ -390,25 +390,51 @@ class SQLiteStorage(Storage):
         logger.info("Steam catalog tables initialized")
 
     async def init_egs_tables(self) -> None:
-        """Create egs_catalog table if it doesn't exist."""
+        """Create egs_catalog table if it doesn't exist, and run inline migrations."""
         conn = await self._get_connection()
         await conn.execute(
             """CREATE TABLE IF NOT EXISTS egs_catalog (
                 url_slug           TEXT PRIMARY KEY,
                 name               TEXT,
                 url                TEXT,
-                price_usd          INTEGER,
-                original_price_usd INTEGER,
+                price_uah          INTEGER,
+                original_price_uah INTEGER,
                 discount_pct       INTEGER DEFAULT 0,
                 last_checked       TIMESTAMP,
-                notified_price_usd INTEGER,
-                notified_at        TIMESTAMP
+                notified_price_uah INTEGER,
+                notified_at        TIMESTAMP,
+                key_image          TEXT,
+                description        TEXT
             )"""
         )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_egs_name ON egs_catalog(lower(trim(name)))"
         )
         await conn.commit()
+
+        # Inline migrations: rename old USD columns → UAH (idempotent via try/except)
+        for sql in [
+            "ALTER TABLE egs_catalog RENAME COLUMN price_usd TO price_uah",
+            "ALTER TABLE egs_catalog RENAME COLUMN original_price_usd TO original_price_uah",
+            "ALTER TABLE egs_catalog RENAME COLUMN notified_price_usd TO notified_price_uah",
+        ]:
+            try:
+                await conn.execute(sql)
+                await conn.commit()
+            except Exception:
+                pass  # Column already renamed or doesn't exist
+
+        # Add new columns if missing
+        for sql in [
+            "ALTER TABLE egs_catalog ADD COLUMN key_image TEXT",
+            "ALTER TABLE egs_catalog ADD COLUMN description TEXT",
+        ]:
+            try:
+                await conn.execute(sql)
+                await conn.commit()
+            except Exception:
+                pass  # Column already exists
+
         logger.info("EGS catalog tables initialized")
 
     async def get_egs_game(self, url_slug: str) -> Optional[dict]:
@@ -416,8 +442,9 @@ class SQLiteStorage(Storage):
         try:
             conn = await self._get_connection()
             async with conn.execute(
-                "SELECT url_slug, name, url, price_usd, original_price_usd, discount_pct, "
-                "last_checked, notified_price_usd, notified_at FROM egs_catalog WHERE url_slug = ?",
+                "SELECT url_slug, name, url, price_uah, original_price_uah, discount_pct, "
+                "last_checked, notified_price_uah, notified_at, key_image, description "
+                "FROM egs_catalog WHERE url_slug = ?",
                 (url_slug,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -425,9 +452,10 @@ class SQLiteStorage(Storage):
                 return None
             return {
                 "url_slug": row[0], "name": row[1], "url": row[2],
-                "price_usd": row[3], "original_price_usd": row[4],
+                "price_uah": row[3], "original_price_uah": row[4],
                 "discount_pct": row[5], "last_checked": row[6],
-                "notified_price_usd": row[7], "notified_at": row[8],
+                "notified_price_uah": row[7], "notified_at": row[8],
+                "key_image": row[9], "description": row[10],
             }
         except Exception as e:
             logger.error(f"Error getting EGS game {url_slug}: {e}", exc_info=True)
@@ -441,14 +469,18 @@ class SQLiteStorage(Storage):
             conn = await self._get_connection()
             await conn.executemany(
                 """INSERT INTO egs_catalog
-                   (url_slug, name, url, price_usd, original_price_usd, discount_pct, last_checked)
-                   VALUES (:url_slug, :name, :url, :price_usd, :original_price_usd, :discount_pct, :last_checked)
+                   (url_slug, name, url, price_uah, original_price_uah, discount_pct,
+                    key_image, description, last_checked)
+                   VALUES (:url_slug, :name, :url, :price_uah, :original_price_uah, :discount_pct,
+                    :key_image, :description, :last_checked)
                    ON CONFLICT(url_slug) DO UPDATE SET
                        name=COALESCE(excluded.name, egs_catalog.name),
                        url=excluded.url,
-                       price_usd=excluded.price_usd,
-                       original_price_usd=COALESCE(excluded.original_price_usd, egs_catalog.original_price_usd),
+                       price_uah=excluded.price_uah,
+                       original_price_uah=COALESCE(excluded.original_price_uah, egs_catalog.original_price_uah),
                        discount_pct=excluded.discount_pct,
+                       key_image=COALESCE(excluded.key_image, egs_catalog.key_image),
+                       description=COALESCE(excluded.description, egs_catalog.description),
                        last_checked=excluded.last_checked""",
                 games,
             )
@@ -456,13 +488,13 @@ class SQLiteStorage(Storage):
         except Exception as e:
             logger.error(f"Error upserting EGS games: {e}", exc_info=True)
 
-    async def update_egs_notification(self, url_slug: str, price_usd: int) -> None:
+    async def update_egs_notification(self, url_slug: str, price_uah: int) -> None:
         """Record that a notification was sent for an EGS game at a given price."""
         try:
             conn = await self._get_connection()
             await conn.execute(
-                "UPDATE egs_catalog SET notified_price_usd = ?, notified_at = ? WHERE url_slug = ?",
-                (price_usd, datetime.now(), url_slug),
+                "UPDATE egs_catalog SET notified_price_uah = ?, notified_at = ? WHERE url_slug = ?",
+                (price_uah, datetime.now(), url_slug),
             )
             await conn.commit()
         except Exception as e:
@@ -473,9 +505,9 @@ class SQLiteStorage(Storage):
         try:
             conn = await self._get_connection()
             async with conn.execute(
-                "SELECT url_slug, name, url, price_usd, original_price_usd, discount_pct, "
-                "last_checked, notified_price_usd, notified_at FROM egs_catalog "
-                "WHERE lower(trim(name)) = lower(trim(?))",
+                "SELECT url_slug, name, url, price_uah, original_price_uah, discount_pct, "
+                "last_checked, notified_price_uah, notified_at, key_image, description "
+                "FROM egs_catalog WHERE lower(trim(name)) = lower(trim(?))",
                 (name,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -483,9 +515,10 @@ class SQLiteStorage(Storage):
                 return None
             return {
                 "url_slug": row[0], "name": row[1], "url": row[2],
-                "price_usd": row[3], "original_price_usd": row[4],
+                "price_uah": row[3], "original_price_uah": row[4],
                 "discount_pct": row[5], "last_checked": row[6],
-                "notified_price_usd": row[7], "notified_at": row[8],
+                "notified_price_uah": row[7], "notified_at": row[8],
+                "key_image": row[9], "description": row[10],
             }
         except Exception as e:
             logger.error(f"Error finding EGS game by name {name!r}: {e}", exc_info=True)

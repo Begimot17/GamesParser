@@ -62,7 +62,8 @@ class Settings(BaseSettings):
 
     # Steam price monitor settings
     STEAM_SCAN_INTERVAL: int = 43200        # seconds, 12 hours
-    STEAM_DISCOUNT_THRESHOLD: int = 90      # % discount threshold for notifications
+    STEAM_DISCOUNT_THRESHOLD: int = 90      # % discount threshold for notifications (fallback / unknown games)
+    STEAM_MIN_DISCOUNT_THRESHOLD: int = 50  # lowest possible threshold (for top-quality games)
     STEAM_APPLIST_REFRESH_DAYS: int = 7     # refresh app list every N days
 
     # EGS price monitor settings

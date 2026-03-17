@@ -1,6 +1,7 @@
 """EGS catalog scanning service for price monitoring (via Epic GraphQL API)."""
 
 import asyncio
+import re
 from typing import Callable, Optional
 
 import cloudscraper
@@ -10,8 +11,6 @@ from src.common.logger import logger
 EGS_GRAPHQL_URL = "https://store.epicgames.com/graphql"
 PAGE_SIZE = 40
 
-# Named operation so APQ / CDN caching can work; uses variables rather than
-# string interpolation to avoid any injection issues.
 _QUERY = """
 query searchStoreQuery(
   $allowCountries: String,
@@ -35,6 +34,11 @@ query searchStoreQuery(
         title
         productSlug
         urlSlug
+        description
+        developerDisplayName
+        offerMappings { pageSlug pageType }
+        keyImages { type url }
+        tags { name groupName }
         price(country: $country) {
           totalPrice {
             discountPrice
@@ -48,17 +52,17 @@ query searchStoreQuery(
 }
 """
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
 
 class EgsCatalogService:
     """Fetches EGS catalog and on-sale prices via Epic GraphQL API.
 
     Uses cloudscraper to bypass Cloudflare protection.
-    Prices are returned in the store's local currency cents (UA → UAH kopecks).
-    Field names intentionally mirror SteamCatalogService (price_usd = local cents).
+    Prices are returned in UAH kopecks (country=UA).
     """
 
     def __init__(self):
-        # cloudscraper is synchronous; calls are wrapped in asyncio.to_thread
         self._session: Optional[cloudscraper.CloudScraper] = None
 
     def _get_session(self) -> cloudscraper.CloudScraper:
@@ -78,7 +82,7 @@ class EgsCatalogService:
             "allowCountries": "UA",
             "count": PAGE_SIZE,
             "country": "UA",
-            "locale": "uk",
+            "locale": "ru",
             "start": start,
             "onSale": True,
         }
@@ -97,15 +101,55 @@ class EgsCatalogService:
         return await asyncio.to_thread(self._fetch_page_sync, start)
 
     @staticmethod
+    def _pick_slug(element: dict) -> Optional[str]:
+        """Pick the best URL slug for a game.
+
+        Priority:
+        1. offerMappings with pageType == 'productHome' → pageSlug
+        2. productSlug
+        3. urlSlug
+        Returns None if nothing usable found.
+        """
+        for mapping in element.get("offerMappings") or []:
+            if mapping.get("pageType") == "productHome":
+                slug = (mapping.get("pageSlug") or "").strip()
+                if slug:
+                    return slug
+        slug = (element.get("productSlug") or "").strip()
+        if slug:
+            return slug
+        slug = (element.get("urlSlug") or "").strip()
+        return slug if slug else None
+
+    @staticmethod
+    def _pick_key_image(element: dict) -> Optional[str]:
+        """Return the best cover image URL from keyImages."""
+        images = element.get("keyImages") or []
+        # Prefer DieselStoreFrontWide (wide banner), fallback to first available
+        for img in images:
+            if img.get("type") == "DieselStoreFrontWide":
+                return img.get("url")
+        for img in images:
+            url = img.get("url")
+            if url:
+                return url
+        return None
+
+    @staticmethod
+    def _strip_html(text: str, max_len: int = 300) -> str:
+        """Remove HTML tags and truncate."""
+        plain = _HTML_TAG_RE.sub("", text or "").strip()
+        return plain[:max_len] if len(plain) > max_len else plain
+
+    @staticmethod
     def _parse_game(element: dict) -> tuple[str, dict] | None:
         """Parse a single EGS catalog element into (url_slug, price_data).
 
-        Returns None for F2P games (originalPrice == 0).
-        The 'discount' field in the EGS response is an absolute amount in cents,
-        not a percentage — we compute discount_pct here.
+        Returns None for F2P games (originalPrice == 0) or missing slug.
+        Prices are in UAH kopecks.
         """
         try:
-            slug = (element.get("productSlug") or element.get("urlSlug") or "").strip()
+            slug = EgsCatalogService._pick_slug(element)
             if not slug:
                 return None
 
@@ -114,7 +158,7 @@ class EgsCatalogService:
 
             original = price_block.get("originalPrice") or 0
             current = price_block.get("discountPrice") or 0
-            discount_abs = price_block.get("discount") or 0  # absolute cents, not %
+            discount_abs = price_block.get("discount") or 0
 
             # F2P: original price is 0 → skip
             if original == 0:
@@ -122,13 +166,41 @@ class EgsCatalogService:
 
             discount_pct = round(discount_abs / original * 100) if original > 0 else 0
 
+            key_image = EgsCatalogService._pick_key_image(element)
+            description = EgsCatalogService._strip_html(element.get("description") or "")
+            developer = element.get("developerDisplayName") or ""
+
+            # Parse tags
+            tags = element.get("tags") or []
+            genre_tags = [
+                t["name"] for t in tags
+                if t.get("groupName", "").lower() == "genre" and t.get("name")
+            ][:3]
+            feature_names = {
+                t["name"].lower() for t in tags
+                if t.get("groupName", "").lower() in ("feature", "features") and t.get("name")
+            }
+            has_controller = bool(feature_names & {
+                "controller support", "full controller support", "partial controller support",
+            })
+            has_multiplayer = bool(feature_names & {
+                "online multiplayer", "multiplayer", "co-op", "online co-op",
+                "local multiplayer", "cross-platform multiplayer",
+            })
+
             url = f"https://store.epicgames.com/en-US/p/{slug}"
             return slug, {
                 "name": title,
-                "price_usd": current,
-                "original_price_usd": original,
+                "price_uah": current,
+                "original_price_uah": original,
                 "discount_pct": discount_pct,
                 "url": url,
+                "key_image": key_image,
+                "description": description,
+                "developer": developer,
+                "genre": ", ".join(genre_tags) if genre_tags else "",
+                "has_controller_support": has_controller,
+                "has_multiplayer": has_multiplayer,
             }
         except Exception:
             return None
@@ -140,8 +212,8 @@ class EgsCatalogService:
         """Paginate through all on-sale EGS games and call on_result_cb for each.
 
         on_result_cb(url_slug, price_data) where price_data contains:
-            name, price_usd (local cents), original_price_usd (local cents),
-            discount_pct, url
+            name, price_uah (UAH kopecks), original_price_uah (UAH kopecks),
+            discount_pct, url, key_image, description
 
         Returns total number of games processed.
         """

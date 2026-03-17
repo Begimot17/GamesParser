@@ -12,13 +12,20 @@ def _service():
 
 # ── Mock helpers ───────────────────────────────────────────────────────────────
 
-def _make_element(title, slug, original, current, discount_pct):
+def _make_element(title, slug, original, current, discount_pct,
+                  offer_page_slug=None, key_images=None, description=""):
     """discount_pct is %, stored as absolute cents in EGS API (original * pct / 100)."""
     discount_abs = round(original * discount_pct / 100)
+    offer_mappings = []
+    if offer_page_slug:
+        offer_mappings = [{"pageSlug": offer_page_slug, "pageType": "productHome"}]
     return {
         "title": title,
         "productSlug": slug,
         "urlSlug": slug,
+        "description": description,
+        "offerMappings": offer_mappings,
+        "keyImages": key_images or [],
         "price": {
             "totalPrice": {
                 "originalPrice": original,
@@ -52,8 +59,8 @@ def test_parse_game_discount():
     slug, data = result
     assert slug == "the-witcher-3"
     assert data["name"] == "Witcher 3"
-    assert data["price_usd"] == 500
-    assert data["original_price_usd"] == 5000
+    assert data["price_uah"] == 500
+    assert data["original_price_uah"] == 5000
     assert data["discount_pct"] == 90
     assert data["url"] == "https://store.epicgames.com/en-US/p/the-witcher-3"
 
@@ -71,8 +78,8 @@ def test_parse_game_became_free():
     result = EgsCatalogService._parse_game(element)
     assert result is not None
     slug, data = result
-    assert data["original_price_usd"] == 3000
-    assert data["price_usd"] == 0
+    assert data["original_price_uah"] == 3000
+    assert data["price_uah"] == 0
     assert data["discount_pct"] == 100
 
 
@@ -82,10 +89,70 @@ def test_parse_game_no_slug():
         "title": "No Slug Game",
         "productSlug": "",
         "urlSlug": "",
+        "description": "",
+        "offerMappings": [],
+        "keyImages": [],
         "price": {"totalPrice": {"originalPrice": 999, "discountPrice": 99, "discount": 90}},
     }
     result = EgsCatalogService._parse_game(element)
     assert result is None
+
+
+def test_parse_game_offer_mappings_slug():
+    """offerMappings productHome slug takes priority over productSlug."""
+    element = _make_element(
+        "Witcher 3", "old-slug", 5000, 500, 90,
+        offer_page_slug="correct-witcher-3-slug"
+    )
+    result = EgsCatalogService._parse_game(element)
+    assert result is not None
+    slug, data = result
+    assert slug == "correct-witcher-3-slug"
+    assert data["url"] == "https://store.epicgames.com/en-US/p/correct-witcher-3-slug"
+
+
+def test_parse_game_key_image_diesel_wide():
+    """DieselStoreFrontWide image is preferred."""
+    key_images = [
+        {"type": "Thumbnail", "url": "https://example.com/thumb.jpg"},
+        {"type": "DieselStoreFrontWide", "url": "https://example.com/wide.jpg"},
+    ]
+    element = _make_element("Game", "game", 1000, 100, 90, key_images=key_images)
+    result = EgsCatalogService._parse_game(element)
+    assert result is not None
+    _, data = result
+    assert data["key_image"] == "https://example.com/wide.jpg"
+
+
+def test_parse_game_key_image_fallback():
+    """First available image used when no DieselStoreFrontWide."""
+    key_images = [
+        {"type": "Thumbnail", "url": "https://example.com/thumb.jpg"},
+    ]
+    element = _make_element("Game", "game", 1000, 100, 90, key_images=key_images)
+    result = EgsCatalogService._parse_game(element)
+    assert result is not None
+    _, data = result
+    assert data["key_image"] == "https://example.com/thumb.jpg"
+
+
+def test_parse_game_no_key_image():
+    """No keyImages → key_image is None."""
+    element = _make_element("Game", "game", 1000, 100, 90)
+    result = EgsCatalogService._parse_game(element)
+    assert result is not None
+    _, data = result
+    assert data["key_image"] is None
+
+
+def test_parse_game_description_stripped():
+    """HTML tags stripped from description."""
+    element = _make_element("Game", "game", 1000, 100, 90,
+                            description="<p>Some <b>description</b> here.</p>")
+    result = EgsCatalogService._parse_game(element)
+    assert result is not None
+    _, data = result
+    assert data["description"] == "Some description here."
 
 
 # ── scan_all_prices tests ──────────────────────────────────────────────────────
@@ -199,3 +266,34 @@ def test_scan_stops_on_error():
 
     total = asyncio.run(fast_run())
     assert total == 40
+
+
+def test_scan_result_has_uah_keys():
+    """Scan results use price_uah/original_price_uah (not price_usd)."""
+    service = _service()
+
+    elements = [_make_element("Game", "my-game", 5000, 500, 90)]
+
+    async def mock_fetch_page(start: int) -> dict:
+        if start == 0:
+            return _make_page_response(elements, total=1)
+        return _make_page_response([], total=1)
+
+    service._fetch_page = mock_fetch_page
+    results = {}
+
+    def cb(slug, data):
+        results[slug] = data
+
+    async def fast_run():
+        import unittest.mock as m
+        with m.patch("asyncio.sleep"):
+            return await service.scan_all_prices(cb)
+
+    asyncio.run(fast_run())
+    assert "my-game" in results
+    assert "price_uah" in results["my-game"]
+    assert "original_price_uah" in results["my-game"]
+    assert "price_usd" not in results["my-game"]
+    assert results["my-game"]["price_uah"] == 500
+    assert results["my-game"]["original_price_uah"] == 5000

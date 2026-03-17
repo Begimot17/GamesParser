@@ -17,14 +17,31 @@ except ImportError:
     missing_data_logger = logging.getLogger("GamesParser.MissingData")
 
 STEAM_API_URL = "https://store.steampowered.com/api/appdetails"
+STEAM_REVIEWS_URL = "https://store.steampowered.com/appreviews/{app_id}"
 GOG_FREE_URL = "https://www.gog.com/games/ajax/filtered?mediaType=game&price=free&page=1"
 TIMEOUT = aiohttp.ClientTimeout(total=8)
+
+# Steam category IDs
+_CONTROLLER_CATS = {18, 28}       # Partial / Full controller support
+_MULTIPLAYER_CATS = {1, 9, 27, 36, 37}  # Multi-player, Co-op, Cross-Platform, Online PvP/Co-op
+
+_LANG_RU_RE = re.compile(r'Русский|Russian', re.IGNORECASE)
+_LANG_UA_RE = re.compile(r'Украин|Українськ|Ukrainian', re.IGNORECASE)
+_AUDIO_RE = re.compile(r'<strong>\*</strong>')
 
 
 class GameInfo:
     """Aggregated info about a game from a store page."""
 
-    __slots__ = ("name", "price", "original_price", "discount_pct", "genre", "metacritic", "developer", "is_free", "review_score")
+    __slots__ = (
+        "name", "price", "original_price", "discount_pct", "genre", "metacritic",
+        "developer", "is_free", "review_score", "short_description", "header_image",
+        # Extended Steam fields
+        "has_controller_support", "has_multiplayer",
+        "has_russian_text", "has_russian_audio",
+        "has_ukrainian_text", "has_ukrainian_audio",
+        "recommendations_total", "top_reviews",
+    )
 
     def __init__(
         self,
@@ -37,6 +54,16 @@ class GameInfo:
         developer: Optional[str] = None,
         is_free: bool = False,
         review_score: Optional[str] = None,
+        short_description: Optional[str] = None,
+        header_image: Optional[str] = None,
+        has_controller_support: bool = False,
+        has_multiplayer: bool = False,
+        has_russian_text: bool = False,
+        has_russian_audio: bool = False,
+        has_ukrainian_text: bool = False,
+        has_ukrainian_audio: bool = False,
+        recommendations_total: Optional[int] = None,
+        top_reviews: Optional[list] = None,
     ):
         self.name = name
         self.price = price
@@ -46,8 +73,17 @@ class GameInfo:
         self.metacritic = metacritic
         self.developer = developer
         self.is_free = is_free
-        # Steam review_score_desc string (e.g. "Overwhelmingly Positive"); uses uk locale (l=uk)
         self.review_score = review_score
+        self.short_description = short_description
+        self.header_image = header_image
+        self.has_controller_support = has_controller_support
+        self.has_multiplayer = has_multiplayer
+        self.has_russian_text = has_russian_text
+        self.has_russian_audio = has_russian_audio
+        self.has_ukrainian_text = has_ukrainian_text
+        self.has_ukrainian_audio = has_ukrainian_audio
+        self.recommendations_total = recommendations_total
+        self.top_reviews = top_reviews or []
 
     def format_price(self) -> Optional[str]:
         """Returns HTML-formatted price string with discount markers."""
@@ -70,11 +106,23 @@ class GameInfo:
             "developer": self.developer,
             "is_free": self.is_free,
             "review_score": self.review_score,
+            "short_description": self.short_description,
+            "header_image": self.header_image,
+            "has_controller_support": self.has_controller_support,
+            "has_multiplayer": self.has_multiplayer,
+            "has_russian_text": self.has_russian_text,
+            "has_russian_audio": self.has_russian_audio,
+            "has_ukrainian_text": self.has_ukrainian_text,
+            "has_ukrainian_audio": self.has_ukrainian_audio,
+            "recommendations_total": self.recommendations_total,
+            "top_reviews": self.top_reviews,
         }
 
     @staticmethod
     def from_dict(d: dict) -> "GameInfo":
-        return GameInfo(**d)
+        # Filter to known keys so old serialized dicts don't break
+        known = {f for f in GameInfo.__slots__}
+        return GameInfo(**{k: v for k, v in d.items() if k in known})
 
 
 class PriceService:
@@ -111,24 +159,24 @@ class PriceService:
         return m.group(1) if m else None
 
     async def get_steam_info(self, url: str) -> Optional[GameInfo]:
-        """Fetch price + genre + metacritic from Steam API (UAH, uk locale)."""
+        """Fetch price + genre + metacritic + languages + categories from Steam API."""
         app_id = self._extract_steam_app_id(url)
         if not app_id:
             missing_data_logger.warning("[Steam] Cannot extract app_id from URL: %s", url)
             return None
         try:
-            params = {"appids": app_id, "cc": "ua", "l": "uk"}
+            params = {"appids": app_id, "cc": "ua", "l": "russian"}
             session = await self._get_session()
-            async with session.get(STEAM_API_URL, params=params, timeout=TIMEOUT) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json(content_type=None)
 
-            game = data.get(app_id, {})
-            if not game.get("success"):
-                missing_data_logger.warning("[Steam] API returned success=False for app_id=%s, url=%s", app_id, url)
+            # Fetch appdetails and top reviews concurrently
+            details_resp, reviews = await asyncio.gather(
+                self._fetch_steam_details(session, params, app_id, url),
+                self._get_steam_reviews(session, app_id),
+                return_exceptions=True,
+            )
+            if isinstance(details_resp, Exception) or details_resp is None:
                 return None
-            info = game.get("data", {})
+            info = details_resp
 
             is_free = bool(info.get("is_free"))
             price_raw = info.get("price_overview") or {}
@@ -145,6 +193,20 @@ class PriceService:
             game_name = info.get("name")
             review_score = info.get("review_score_desc") or None
 
+            # Categories
+            cat_ids = {c.get("id") for c in (info.get("categories") or [])}
+            has_controller = bool(cat_ids & _CONTROLLER_CATS)
+            has_mp = bool(cat_ids & _MULTIPLAYER_CATS)
+
+            # Language support
+            lang_html = info.get("supported_languages") or ""
+            has_ru_text, has_ru_audio, has_ua_text, has_ua_audio = self._parse_languages(lang_html)
+
+            # Recommendations count
+            recs = (info.get("recommendations") or {}).get("total")
+
+            top_reviews = reviews if isinstance(reviews, list) else []
+
             return GameInfo(
                 name=game_name,
                 price=price_raw.get("final_formatted") if price_raw else None,
@@ -155,10 +217,75 @@ class PriceService:
                 developer=developer,
                 is_free=is_free,
                 review_score=review_score,
+                short_description=info.get("short_description") or None,
+                header_image=(
+                    info.get("header_image")
+                    or f"https://cdn.akamai.steamstatic.com/steam/apps/{app_id}/header.jpg"
+                ),
+                has_controller_support=has_controller,
+                has_multiplayer=has_mp,
+                has_russian_text=has_ru_text,
+                has_russian_audio=has_ru_audio,
+                has_ukrainian_text=has_ua_text,
+                has_ukrainian_audio=has_ua_audio,
+                recommendations_total=int(recs) if recs else None,
+                top_reviews=top_reviews,
             )
         except Exception as e:
             logger.debug("Steam info lookup failed for %s: %s", url, e)
             return None
+
+    async def _fetch_steam_details(self, session, params, app_id, url) -> Optional[dict]:
+        """Fetch and validate Steam appdetails. Returns info dict or None."""
+        async with session.get(STEAM_API_URL, params=params, timeout=TIMEOUT) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json(content_type=None)
+        game = data.get(app_id, {})
+        if not game.get("success"):
+            missing_data_logger.warning("[Steam] success=False app_id=%s url=%s", app_id, url)
+            return None
+        return game.get("data", {})
+
+    async def _get_steam_reviews(self, session, app_id: str, count: int = 2) -> list[str]:
+        """Fetch top Russian reviews for a Steam app."""
+        try:
+            url = STEAM_REVIEWS_URL.format(app_id=app_id)
+            params = {
+                "json": 1, "filter": "top", "language": "russian",
+                "num_per_page": count, "cursor": "*", "purchase_type": "all",
+            }
+            async with session.get(url, params=params, timeout=TIMEOUT) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json(content_type=None)
+            return [
+                r.get("review", "").strip()
+                for r in (data.get("reviews") or [])
+                if r.get("review", "").strip()
+            ][:count]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _parse_languages(lang_html: str) -> tuple[bool, bool, bool, bool]:
+        """Parse Steam supported_languages HTML string.
+
+        Returns (has_ru_text, has_ru_audio, has_ua_text, has_ua_audio).
+        Audio is indicated by <strong>*</strong> after the language name.
+        """
+        def _check(pattern):
+            m = pattern.search(lang_html)
+            if not m:
+                return False, False
+            # Check if <strong>*</strong> appears right after the match
+            tail = lang_html[m.end():m.end() + 40]
+            has_audio = bool(_AUDIO_RE.search(tail))
+            return True, has_audio
+
+        has_ru, has_ru_audio = _check(_LANG_RU_RE)
+        has_ua, has_ua_audio = _check(_LANG_UA_RE)
+        return has_ru, has_ru_audio, has_ua, has_ua_audio
 
     # ── Epic Games Store ────────────────────────────────────────────────────
 

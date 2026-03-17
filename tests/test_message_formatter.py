@@ -190,3 +190,96 @@ class TestFreeTagNotDuplicated:
         )
         result = formatter.format_message(post)
         assert result.count("#free") == 1
+
+
+class TestFormatPriceAlert:
+    def test_fmt_uah_became_free(self, formatter):
+        msg = formatter.format_price_alert(
+            name="Game",
+            url="https://store.steampowered.com/app/123/",
+            old_price_uah=249900,
+            new_price_uah=0,
+            original_price_uah=249900,
+            discount_pct=100,
+            alert_type="became_free",
+        )
+        assert "₴2\u00a0499" in msg  # 249900 kopecks = ₴2 499
+        assert "$" not in msg
+        assert "безкоштовною" in msg
+
+    def test_fmt_uah_big_discount(self, formatter):
+        msg = formatter.format_price_alert(
+            name="Game",
+            url="https://store.steampowered.com/app/123/",
+            old_price_uah=249900,
+            new_price_uah=49900,
+            original_price_uah=249900,
+            discount_pct=80,
+            alert_type="big_discount",
+        )
+        assert "₴2\u00a0499" in msg   # original
+        assert "₴499" in msg          # final
+        assert "80%" in msg
+        assert "$" not in msg
+
+    def test_short_description_included(self, formatter):
+        msg = formatter.format_price_alert(
+            name="Game",
+            url="https://store.steampowered.com/app/123/",
+            old_price_uah=249900,
+            new_price_uah=49900,
+            original_price_uah=249900,
+            discount_pct=80,
+            alert_type="big_discount",
+            short_description="An amazing open-world game.",
+        )
+        assert "An amazing open-world game." in msg
+        assert "📝" in msg
+
+    def test_short_description_truncated(self, formatter):
+        long_desc = "A" * 250
+        msg = formatter.format_price_alert(
+            name="Game",
+            url="https://store.steampowered.com/app/123/",
+            old_price_uah=100,
+            new_price_uah=10,
+            original_price_uah=100,
+            discount_pct=90,
+            alert_type="big_discount",
+            short_description=long_desc,
+        )
+        assert "…" in msg  # truncated at 200 chars
+
+    def test_uah_free_price_shows_bezkoshtovno(self, formatter):
+        msg = formatter.format_price_alert(
+            name="Game",
+            url="https://store.steampowered.com/app/123/",
+            old_price_uah=0,
+            new_price_uah=0,
+            original_price_uah=0,
+            discount_pct=0,
+            alert_type="big_discount",
+        )
+        assert "Безкоштовно" in msg
+
+    def test_cross_store_uses_uah_keys(self, formatter):
+        cross = {
+            "store": "steam",
+            "url": "https://store.steampowered.com/app/1/",
+            "price_uah": 49900,
+            "original_price_uah": 249900,
+            "discount_pct": 80,
+        }
+        msg = formatter.format_price_alert(
+            name="Game",
+            url="https://store.epicgames.com/en-US/p/game",
+            old_price_uah=249900,
+            new_price_uah=49900,
+            original_price_uah=249900,
+            discount_pct=80,
+            alert_type="big_discount",
+            store="egs",
+            cross_store_data=cross,
+        )
+        assert "Також у Steam" in msg
+        assert "₴" in msg

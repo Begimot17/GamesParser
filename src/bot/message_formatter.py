@@ -280,17 +280,20 @@ class MessageFormatter:
         game_info=None,
         store: str = "steam",
         cross_store_data: Optional[dict] = None,
+        short_description: Optional[str] = None,
     ) -> str:
         """Format a price alert message for Steam or EGS.
 
         alert_type: 'became_free' | 'big_discount'
         store: 'steam' | 'egs'
-        Prices are in USD cents.
+        Prices are in UAH kopecks.
         """
-        def fmt_usd(cents: Optional[int]) -> str:
-            if cents is None:
+        def fmt_uah(kopecks: Optional[int]) -> str:
+            if kopecks is None:
                 return "?"
-            return f"${cents / 100:.2f}"
+            if kopecks == 0:
+                return "Безкоштовно"
+            return f"₴{kopecks // 100:,}".replace(",", "\u00a0")
 
         safe_name = self.escape_html(name)
         safe_url = self.escape_html(url)
@@ -304,9 +307,10 @@ class MessageFormatter:
                 header = "🎁 Гра стала безкоштовною на Epic Games Store!"
             else:
                 header = "🎁 Гра стала безкоштовною на Steam!"
-            old_fmt = fmt_usd(original_price_uah or old_price_uah)
-            saving = (original_price_uah or old_price_uah or 0) / 100
-            price_line = f"💰 Ціна: <s>{old_fmt}</s> → Безкоштовно (зниження на ${saving:.2f})"
+            orig_kopecks = original_price_uah or old_price_uah or 0
+            old_fmt = fmt_uah(orig_kopecks)
+            saving_fmt = fmt_uah(orig_kopecks)
+            price_line = f"💰 Ціна: <s>{old_fmt}</s> → Безкоштовно (зниження на {saving_fmt})"
             if is_egs:
                 tags = "#free #epic #epicgames #безкоштовно"
             else:
@@ -316,35 +320,78 @@ class MessageFormatter:
                 header = "💥 Велика знижка на Epic Games Store!"
             else:
                 header = "💥 Велика знижка на Steam!"
-            orig_fmt = fmt_usd(original_price_uah)
-            new_fmt = fmt_usd(new_price_uah)
-            saving = ((original_price_uah or 0) - new_price_uah) / 100
-            price_line = f"💰 <s>{orig_fmt}</s> → {new_fmt} (-{discount_pct}%, зниження на ${saving:.2f})"
+            orig_fmt = fmt_uah(original_price_uah)
+            new_fmt = fmt_uah(new_price_uah)
+            saving_kopecks = (original_price_uah or 0) - new_price_uah
+            saving_fmt = fmt_uah(saving_kopecks)
+            price_line = f"💰 {orig_fmt} → {new_fmt} (-{discount_pct}%, знижка {saving_fmt})"
             if is_egs:
                 tags = "#знижка #epic #epicgames"
             else:
                 tags = "#знижка #steam"
 
-        parts = [header, f"🎮 {name_link}", price_line]
+        parts = [header, f"🎮 {name_link}"]
+
+        # Short description (truncated to 180 chars)
+        desc = short_description
+        if not desc and game_info and getattr(game_info, "short_description", None):
+            desc = game_info.short_description
+        if desc:
+            desc_truncated = desc[:180] + "…" if len(desc) > 180 else desc
+            parts.append(f"\n📝 {self.escape_html(desc_truncated)}")
+
+        parts.append(price_line)
 
         if game_info:
-            if game_info.genre:
-                parts.append(f"🎭 Жанр: {self.escape_html(game_info.genre)}")
+            # Genre + rating + recommendations count
             meta_parts = []
+            if game_info.genre:
+                meta_parts.append(f"🎭 {self.escape_html(game_info.genre)}")
             if game_info.metacritic is not None:
                 meta_parts.append(f"⭐ Metacritic: {game_info.metacritic}")
-            if game_info.developer:
-                meta_parts.append(f"👨‍💻 {self.escape_html(game_info.developer)}")
+            if getattr(game_info, "review_score", None):
+                meta_parts.append(self.escape_html(game_info.review_score))
+            recs = getattr(game_info, "recommendations_total", None)
+            if recs:
+                meta_parts.append(f"👍 {recs:,}".replace(",", "\u00a0"))
             if meta_parts:
                 parts.append(" | ".join(meta_parts))
+
+            # Languages and features line
+            feat_parts = []
+            lang_parts = []
+            if getattr(game_info, "has_russian_audio", False):
+                lang_parts.append("RU🔊")
+            elif getattr(game_info, "has_russian_text", False):
+                lang_parts.append("RU")
+            if getattr(game_info, "has_ukrainian_audio", False):
+                lang_parts.append("UA🔊")
+            elif getattr(game_info, "has_ukrainian_text", False):
+                lang_parts.append("UA")
+            if lang_parts:
+                feat_parts.append("🌐 " + " ".join(lang_parts))
+            if getattr(game_info, "has_controller_support", False):
+                feat_parts.append("🕹 Геймпад")
+            if getattr(game_info, "has_multiplayer", False):
+                feat_parts.append("👥 Мультиплеер")
+            if feat_parts:
+                parts.append(" | ".join(feat_parts))
+
+            # Top reviews (up to 2, truncated to 120 chars each)
+            reviews = getattr(game_info, "top_reviews", None) or []
+            for review_text in reviews[:2]:
+                truncated = review_text[:120].rstrip()
+                if len(review_text) > 120:
+                    truncated += "…"
+                parts.append(f'💬 "{self.escape_html(truncated)}"')
 
         parts.append(tags)
 
         if cross_store_data:
             cross_store = cross_store_data.get("store", "")
             cross_url = cross_store_data.get("url", "")
-            cross_price = cross_store_data.get("price_usd")
-            cross_original = cross_store_data.get("original_price_usd")
+            cross_price = cross_store_data.get("price_uah")
+            cross_original = cross_store_data.get("original_price_uah")
             cross_discount = cross_store_data.get("discount_pct") or 0
 
             if cross_url:
@@ -354,7 +401,11 @@ class MessageFormatter:
                     cross_label = "Також в Epic Games Store"
 
                 cross_link = f'<a href="{self.escape_html(cross_url)}">{cross_label}</a>'
-                cross_price_line = f"💲 {fmt_usd(cross_original)} → {fmt_usd(cross_price)} (-{cross_discount}%)"
+                cross_price_line = f"💰 {fmt_uah(cross_original)} → {fmt_uah(cross_price)} (-{cross_discount}%)"
                 parts.append(f"━━━━━━━━━━\n🔗 {cross_link}\n{cross_price_line}")
 
-        return "\n".join(parts)
+        result = "\n".join(parts)
+        # Telegram caption limit for photos is 1024 chars
+        if len(result) > 1024:
+            result = result[:1021] + "…"
+        return result

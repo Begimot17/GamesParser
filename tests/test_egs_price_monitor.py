@@ -24,66 +24,66 @@ def make_monitor():
 
 # ── _detect_change tests ───────────────────────────────────────────────────────
 
-def _stored(price_usd=None, original_price_usd=None, notified_price_usd=None):
+def _stored(price_uah=None, original_price_uah=None, notified_price_uah=None):
     return {
-        "price_usd": price_usd,
-        "original_price_usd": original_price_usd,
-        "notified_price_usd": notified_price_usd,
+        "price_uah": price_uah,
+        "original_price_uah": original_price_uah,
+        "notified_price_uah": notified_price_uah,
     }
 
 
 def test_became_free():
     monitor = make_monitor()
-    stored = _stored(price_usd=4999, original_price_usd=4999, notified_price_usd=4999)
+    stored = _stored(price_uah=4999, original_price_uah=4999, notified_price_uah=4999)
     result = monitor._detect_change(stored, new_price=0, new_original=4999, new_discount=100)
     assert result == "became_free"
 
 
 def test_became_free_already_notified():
     monitor = make_monitor()
-    stored = _stored(price_usd=0, original_price_usd=4999, notified_price_usd=0)
+    stored = _stored(price_uah=0, original_price_uah=4999, notified_price_uah=0)
     result = monitor._detect_change(stored, new_price=0, new_original=4999, new_discount=100)
     assert result is None
 
 
 def test_big_discount():
     monitor = make_monitor()
-    stored = _stored(price_usd=4999, original_price_usd=4999, notified_price_usd=4999)
+    stored = _stored(price_uah=4999, original_price_uah=4999, notified_price_uah=4999)
     result = monitor._detect_change(stored, new_price=499, new_original=4999, new_discount=90)
     assert result == "big_discount"
 
 
 def test_big_discount_below_threshold():
     monitor = make_monitor()
-    stored = _stored(price_usd=4999, original_price_usd=4999, notified_price_usd=4999)
+    stored = _stored(price_uah=4999, original_price_uah=4999, notified_price_uah=4999)
     result = monitor._detect_change(stored, new_price=2499, new_original=4999, new_discount=50)
     assert result is None
 
 
 def test_big_discount_already_notified_same_price():
     monitor = make_monitor()
-    stored = _stored(price_usd=499, original_price_usd=4999, notified_price_usd=499)
+    stored = _stored(price_uah=499, original_price_uah=4999, notified_price_uah=499)
     result = monitor._detect_change(stored, new_price=499, new_original=4999, new_discount=90)
     assert result is None
 
 
 def test_big_discount_price_dropped_further():
     monitor = make_monitor()
-    stored = _stored(price_usd=999, original_price_usd=4999, notified_price_usd=999)
+    stored = _stored(price_uah=999, original_price_uah=4999, notified_price_uah=999)
     result = monitor._detect_change(stored, new_price=499, new_original=4999, new_discount=90)
     assert result == "big_discount"
 
 
 def test_always_free_skipped():
     monitor = make_monitor()
-    stored = _stored(price_usd=0, original_price_usd=None, notified_price_usd=None)
+    stored = _stored(price_uah=0, original_price_uah=None, notified_price_uah=None)
     result = monitor._detect_change(stored, new_price=0, new_original=None, new_discount=0)
     assert result is None
 
 
 def test_no_price_change():
     monitor = make_monitor()
-    stored = _stored(price_usd=4999, original_price_usd=4999, notified_price_usd=None)
+    stored = _stored(price_uah=4999, original_price_uah=4999, notified_price_uah=None)
     result = monitor._detect_change(stored, new_price=4999, new_original=4999, new_discount=0)
     assert result is None
 
@@ -159,8 +159,8 @@ def test_cross_store_block_included():
     cross_store_data = {
         "store": "steam",
         "url": "https://store.steampowered.com/app/123/",
-        "price_usd": 499,
-        "original_price_usd": 4999,
+        "price_uah": 499,
+        "original_price_uah": 4999,
         "discount_pct": 90,
     }
     msg = formatter.format_price_alert(
@@ -187,8 +187,8 @@ def test_cross_store_block_egs_in_steam_message():
     cross_store_data = {
         "store": "egs",
         "url": "https://store.epicgames.com/en-US/p/test-game",
-        "price_usd": 499,
-        "original_price_usd": 4999,
+        "price_uah": 499,
+        "original_price_uah": 4999,
         "discount_pct": 90,
     }
     msg = formatter.format_price_alert(
@@ -234,14 +234,16 @@ def test_process_result_sends_alert():
         "url_slug": "test-game",
         "name": "Test Game",
         "url": "https://store.epicgames.com/en-US/p/test-game",
-        "price_usd": 4999,
-        "original_price_usd": 4999,
-        "notified_price_usd": 4999,
+        "price_uah": 4999,
+        "original_price_uah": 4999,
+        "notified_price_uah": 4999,
         "discount_pct": 0,
+        "key_image": None,
+        "description": None,
     }
     monitor.storage.get_egs_game = AsyncMock(return_value=stored)
 
-    price_data = {"price_usd": 0, "original_price_usd": 4999, "discount_pct": 100}
+    price_data = {"price_uah": 0, "original_price_uah": 4999, "discount_pct": 100}
     result = asyncio.run(monitor._process_result(
         "test-game", "Test Game", "https://store.epicgames.com/en-US/p/test-game", price_data
     ))
@@ -257,14 +259,16 @@ def test_process_result_no_alert_no_change():
         "url_slug": "test-game",
         "name": "Test Game",
         "url": "https://store.epicgames.com/en-US/p/test-game",
-        "price_usd": 4999,
-        "original_price_usd": 4999,
-        "notified_price_usd": None,
+        "price_uah": 4999,
+        "original_price_uah": 4999,
+        "notified_price_uah": None,
         "discount_pct": 0,
+        "key_image": None,
+        "description": None,
     }
     monitor.storage.get_egs_game = AsyncMock(return_value=stored)
 
-    price_data = {"price_usd": 4999, "original_price_usd": 4999, "discount_pct": 0}
+    price_data = {"price_uah": 4999, "original_price_uah": 4999, "discount_pct": 0}
     result = asyncio.run(monitor._process_result(
         "test-game", "Test Game", "https://store.epicgames.com/en-US/p/test-game", price_data
     ))
@@ -277,7 +281,7 @@ def test_process_result_no_stored_game():
     monitor = make_monitor()
     monitor.storage.get_egs_game = AsyncMock(return_value=None)
 
-    price_data = {"price_usd": 0, "original_price_usd": 4999, "discount_pct": 100}
+    price_data = {"price_uah": 0, "original_price_uah": 4999, "discount_pct": 100}
     result = asyncio.run(monitor._process_result(
         "some-game", "Some Game", "https://store.epicgames.com/en-US/p/some-game", price_data
     ))
@@ -293,10 +297,12 @@ def test_cross_store_data_included_when_steam_recent():
         "url_slug": "test-game",
         "name": "Test Game",
         "url": "https://store.epicgames.com/en-US/p/test-game",
-        "price_usd": 4999,
-        "original_price_usd": 4999,
-        "notified_price_usd": 4999,
+        "price_uah": 4999,
+        "original_price_uah": 4999,
+        "notified_price_uah": 4999,
         "discount_pct": 0,
+        "key_image": None,
+        "description": None,
     }
     monitor.storage.get_egs_game = AsyncMock(return_value=stored)
 
@@ -315,13 +321,13 @@ def test_cross_store_data_included_when_steam_recent():
 
     sent_messages = []
 
-    async def capture_send(msg):
+    async def capture_send(msg, images=None):
         sent_messages.append(msg)
         return True
 
     monitor.bot.send_message = capture_send
 
-    price_data = {"price_usd": 0, "original_price_usd": 4999, "discount_pct": 100}
+    price_data = {"price_uah": 0, "original_price_uah": 4999, "discount_pct": 100}
     result = asyncio.run(monitor._process_result(
         "test-game", "Test Game", "https://store.epicgames.com/en-US/p/test-game", price_data
     ))
@@ -341,10 +347,12 @@ def test_cross_store_data_not_included_when_steam_old():
         "url_slug": "test-game",
         "name": "Test Game",
         "url": "https://store.epicgames.com/en-US/p/test-game",
-        "price_usd": 4999,
-        "original_price_usd": 4999,
-        "notified_price_usd": 4999,
+        "price_uah": 4999,
+        "original_price_uah": 4999,
+        "notified_price_uah": 4999,
         "discount_pct": 0,
+        "key_image": None,
+        "description": None,
     }
     monitor.storage.get_egs_game = AsyncMock(return_value=stored)
 
@@ -363,13 +371,13 @@ def test_cross_store_data_not_included_when_steam_old():
 
     sent_messages = []
 
-    async def capture_send(msg):
+    async def capture_send(msg, images=None):
         sent_messages.append(msg)
         return True
 
     monitor.bot.send_message = capture_send
 
-    price_data = {"price_usd": 0, "original_price_usd": 4999, "discount_pct": 100}
+    price_data = {"price_uah": 0, "original_price_uah": 4999, "discount_pct": 100}
     asyncio.run(monitor._process_result(
         "test-game", "Test Game", "https://store.epicgames.com/en-US/p/test-game", price_data
     ))

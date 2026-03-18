@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import sys
 from datetime import date, datetime
 
@@ -16,6 +17,7 @@ from src.monitors.steam_price_monitor import SteamPriceMonitor
 from src.services.gamerpower_service import GamerPowerService
 from src.services.gog_free_games_service import GogFreeGamesService
 from src.services.indiegala_free_games_service import IndieGalaFreeGamesService
+from src.services.price_service import PriceService
 from src.parsers.parser_manager import ParserManager
 from src.parsers.pikabu_parser import PikabuParser
 from src.parsers.stopgame_parser import StopGameParser
@@ -32,6 +34,7 @@ class NewsMonitor:
 
         self.storage = SQLiteStorage(self.settings.DB_PATH)
         self._last_cleanup: Optional[date] = None
+        self._price_service = PriceService()
         self.bot = TelegramNewsBot(
             token=self.settings.TELEGRAM_BOT_TOKEN,
             channel_id=self.settings.TELEGRAM_CHANNEL_ID
@@ -82,6 +85,7 @@ class NewsMonitor:
     async def run(self, use_streaming: bool = True):
         """Runs the monitoring loop."""
         logger.info("Starting NewsMonitor...")
+        await self.storage.init_estate_tables()
         try:
             if use_streaming:
                 from src.bot.command_handler import CommandHandler
@@ -126,6 +130,112 @@ class NewsMonitor:
             "sent": success,
         }, ensure_ascii=False))
 
+    async def _add_post_to_estate(self, post: Post) -> None:
+        """Accumulate a post into its estate (grouped by normalized title)."""
+        estate_id = SQLiteStorage._title_hash(SQLiteStorage._normalize_title(post.title))
+        logger.info("[Estate] Accumulating post %s (%s) → estate %s", post.id, post.source, estate_id[:8])
+        await self.storage.upsert_estate(estate_id, post.title, post)
+        await self.storage.add_post_to_estate(estate_id, post)
+        await self.storage.save_post(post, sent=False)
+        await self.storage.mark_title_seen(post.title, post.id, post.source)
+        await self.storage.mark_as_processed(post.id)
+
+    async def _enrich_with_steam(self, estate: dict):
+        """Fetch Steam GameInfo for an estate if it has a Steam store link."""
+        if estate.get("store_name") != "steam":
+            return None
+        url = estate.get("store_url", "")
+        if not re.search(r"/app/\d+", url):
+            return None
+        try:
+            return await self._price_service.get_steam_info(url, lang="english")
+        except Exception as e:
+            logger.warning("[Estate] Steam enrichment failed for %s: %s", url, e)
+            return None
+
+    async def _flush_pending_estates(self) -> None:
+        """Send one Telegram alert per pending estate, then mark them flushed."""
+        estates = await self.storage.get_pending_estates()
+        if not estates:
+            return
+        logger.info("[Estate] Flushing %d estate(s)...", len(estates))
+        for estate in estates:
+            try:
+                game_info = await self._enrich_with_steam(estate)
+                text = self.bot.formatter.format_estate_alert(
+                    title=estate["title"],
+                    store_url=estate["store_url"],
+                    store_name=estate["store_name"],
+                    is_free=estate["is_free"],
+                    description=estate["description"],
+                    posts=estate["posts"],
+                    tags=estate["tags"],
+                    game_info=game_info,
+                )
+                images: list[str] = [i for i in estate["images"] if isinstance(i, str) and i.startswith("https://")]
+                if game_info and getattr(game_info, "header_image", None):
+                    images = [game_info.header_image] + images
+
+                success = await self.bot.send_message(text, images=images[:1] or None)
+                await self.storage.mark_estate_flushed(estate["estate_id"], sent=success)
+                if success:
+                    await self.storage.mark_posts_sent(estate["estate_id"])
+                    logger.info("[Estate] Sent estate %s: %s", estate["estate_id"][:8], estate["title"])
+                else:
+                    logger.error("[Estate] Failed to send estate %s", estate["estate_id"][:8])
+                    await self.storage.save_failed_estate(
+                        estate["estate_id"],
+                        json.dumps(estate, default=str),
+                        "send_message returned False",
+                    )
+            except Exception as e:
+                logger.error("[Estate] Error flushing estate %s: %s", estate["estate_id"][:8], e, exc_info=True)
+                try:
+                    await self.storage.save_failed_estate(
+                        estate["estate_id"], json.dumps(estate, default=str), str(e)
+                    )
+                except Exception:
+                    pass
+            await asyncio.sleep(self.settings.STREAM_POST_PROCESSING_DELAY)
+
+    async def _retry_failed_estates(self) -> None:
+        """Attempt to resend estates from the Dead Letter Queue."""
+        failed = await self.storage.get_failed_estates(max_retries=3)
+        if not failed:
+            return
+        logger.info("[Estate DLQ] Retrying %d failed estate(s)", len(failed))
+        for entry in failed:
+            estate_id = entry["estate_id"]
+            try:
+                estate = json.loads(entry["estate_json"])
+                game_info = await self._enrich_with_steam(estate)
+                text = self.bot.formatter.format_estate_alert(
+                    title=estate.get("title", ""),
+                    store_url=estate.get("store_url"),
+                    store_name=estate.get("store_name"),
+                    is_free=estate.get("is_free", False),
+                    description=estate.get("description", ""),
+                    posts=estate.get("posts", []),
+                    tags=estate.get("tags", []),
+                    game_info=game_info,
+                )
+                images = [i for i in estate.get("images", []) if isinstance(i, str) and i.startswith("https://")]
+                if game_info and getattr(game_info, "header_image", None):
+                    images = [game_info.header_image] + images
+
+                success = await self.bot.send_message(text, images=images[:1] or None)
+                if success:
+                    await self.storage.mark_estate_flushed(estate_id, sent=True)
+                    await self.storage.mark_posts_sent(estate_id)
+                    await self.storage.delete_failed_estate(estate_id)
+                    logger.info("[Estate DLQ] Retry succeeded for estate %s", estate_id[:8])
+                else:
+                    await self.storage.increment_estate_retry(estate_id)
+                    logger.warning("[Estate DLQ] Retry failed for estate %s", estate_id[:8])
+            except Exception as e:
+                logger.error("[Estate DLQ] Error retrying estate %s: %s", estate_id[:8], e, exc_info=True)
+                await self.storage.increment_estate_retry(estate_id)
+
     async def _retry_failed_posts(self) -> None:
         """Attempt to resend posts from the Dead Letter Queue."""
         failed = await self.storage.get_failed_posts(max_retries=3)
@@ -155,81 +265,35 @@ class NewsMonitor:
                 await self.storage.increment_retry(post_id)
 
     async def _run_streaming(self):
-        """Runs the monitoring loop using streaming."""
+        """Runs the monitoring loop using streaming with estate-based grouping."""
         logger.info("Starting streaming mode...")
-        async for post in self.parser_manager.stream_posts():
-            # Daily cleanup of old posts
-            today = date.today()
-            if self._last_cleanup != today:
-                try:
-                    deleted = await self.storage.cleanup_old_posts(self.settings.DB_RETENTION_DAYS)
-                    if deleted:
-                        logger.info("[Cleanup] Removed %d old posts (retention=%dd)", deleted, self.settings.DB_RETENTION_DAYS)
-                except Exception as e:
-                    logger.error("[Cleanup] Failed: %s", e)
-                self._last_cleanup = today
-
-            metrics = CycleMetrics()
-            try:
-                metrics.posts_found += 1
-
-                if await self.storage.is_processed(post.id):
-                    metrics.posts_skipped_processed += 1
-                    continue
-
-                # Title deduplication
-                seen, orig_id, orig_source = await self.storage.is_title_seen(post.title)
-                if seen:
-                    missing_data_logger.info(
-                        "[Dedup] Duplicate title skipped: %s (original: %s/%s)",
-                        post.id, orig_source, orig_id
-                    )
-                    metrics.posts_skipped_processed += 1
-                    continue
-
-                # Track metrics for missing data
-                if post.metadata:
-                    if not post.metadata.store_links:
-                        metrics.posts_no_store_links += 1
-                    elif "steam" not in post.metadata.store_links:
-                        metrics.posts_no_steam_link += 1
-                    if not post.metadata.images:
-                        metrics.posts_no_image += 1
-
-                logger.info(f"New post found: {post.title} ({post.link})")
-                success = await self.bot.send_message(
-                    self.bot.formatter.format_message(post),
-                    images=self._safe_images(post)
-                )
-
-                await self.storage.save_post(post, sent=success)
-
-                if success:
-                    await self.storage.mark_as_processed(post.id)
-                    await self.storage.mark_title_seen(post.title, post.id, post.source)
-                    self._audit_post(post, success=True)
-                    metrics.posts_sent += 1
-                    logger.info(f"Post {post.id} processed and sent.")
-                else:
-                    metrics.posts_failed_send += 1
-                    self._audit_post(post, success=False)
-                    logger.error(f"Failed to send post {post.id}")
-                    # Save to DLQ
+        async for item in self.parser_manager.stream_posts():
+            if item is None:
+                # End-of-cycle sentinel: flush estates, retry DLQs, daily cleanup
+                today = date.today()
+                if self._last_cleanup != today:
                     try:
-                        await self.storage.save_failed_post(
-                            post.id, post.model_dump_json(), "send_message returned False"
-                        )
-                    except Exception as dlq_err:
-                        logger.error("[DLQ] Failed to save post %s: %s", post.id, dlq_err)
+                        deleted = await self.storage.cleanup_old_posts(self.settings.DB_RETENTION_DAYS)
+                        if deleted:
+                            logger.info("[Cleanup] Removed %d old posts (retention=%dd)", deleted, self.settings.DB_RETENTION_DAYS)
+                    except Exception as e:
+                        logger.error("[Cleanup] Failed: %s", e)
+                    self._last_cleanup = today
 
+                await self._flush_pending_estates()
+                await self._retry_failed_estates()
+                await self._retry_failed_posts()
+                continue
+
+            post: Post = item
+            try:
+                if await self.storage.is_processed(post.id):
+                    continue
+
+                await self._add_post_to_estate(post)
                 await asyncio.sleep(self.settings.STREAM_POST_PROCESSING_DELAY)
-
             except Exception as e:
-                logger.error(f"Error processing post in stream: {e}", exc_info=True)
-            finally:
-                metrics.log_summary()
-
-        await self._retry_failed_posts()
+                logger.error("Error accumulating post %s into estate: %s", post.id, e, exc_info=True)
 
     async def _run_polling(self):
         """Runs the monitoring loop using polling (legacy)."""

@@ -431,3 +431,144 @@ class MessageFormatter:
         if len(result) > 1024:
             result = result[:1021] + "…"
         return result
+
+    def format_estate_alert(
+        self,
+        title: str,
+        store_url: Optional[str],
+        store_name: Optional[str],
+        is_free: bool,
+        description: str,
+        posts: list,          # [{source, post_link}]
+        tags: list,
+        game_info=None,       # GameInfo object or None
+    ) -> str:
+        """Format a grouped estate alert (multiple sources covering same game event).
+
+        Produces a Steam price alert-style card with all source links in one message.
+        """
+        store_lower = (store_name or "").lower()
+
+        # Header
+        if is_free:
+            header = self._HEADERS_FREE.get(store_lower, "🎁 Гра роздається безкоштовно!")
+        else:
+            header = f"🎮 {self.escape_html(title)}"
+
+        # Title line
+        if store_url:
+            safe_url = self.escape_html(store_url)
+            safe_title = self.escape_html(game_info.name if game_info and game_info.name else title)
+            title_line = f"🎮 <a href=\"{safe_url}\">{safe_title}</a>"
+        else:
+            title_line = f"🎮 {self.escape_html(game_info.name if game_info and game_info.name else title)}"
+
+        parts = [header, title_line]
+
+        # Description (from GameInfo or post content)
+        desc = None
+        if game_info and getattr(game_info, "short_description", None):
+            desc = game_info.short_description
+        elif description:
+            desc = description
+        if desc:
+            desc_clean = re.sub(r"\s+", " ", desc).strip()
+            if len(desc_clean) > 180:
+                desc_clean = desc_clean[:177] + "…"
+            parts.append(f"\n📝 {self.escape_html(desc_clean)}")
+
+        # Price line
+        price_line = None
+        if game_info:
+            orig = getattr(game_info, "original_price", None)
+            if is_free:
+                if orig:
+                    price_line = f"💰 Ціна: <s>{self.escape_html(orig)}</s> → Безкоштовно"
+                else:
+                    price_line = "💰 Ціна: Безкоштовно"
+            else:
+                fmt = game_info.format_price()
+                if fmt:
+                    price_line = f"💰 Ціна: {fmt}"
+        elif is_free:
+            price_line = "💰 Ціна: Безкоштовно"
+        if price_line:
+            parts.append(price_line)
+
+        if game_info:
+            # Genre + metacritic + review score + recommendations
+            meta_parts = []
+            if game_info.genre:
+                meta_parts.append(f"🎭 {self.escape_html(game_info.genre)}")
+            if game_info.metacritic is not None:
+                meta_parts.append(f"⭐ Metacritic: {game_info.metacritic}")
+            if getattr(game_info, "review_score", None):
+                meta_parts.append(self.escape_html(game_info.review_score))
+            recs = getattr(game_info, "recommendations_total", None)
+            if recs:
+                meta_parts.append(f"👍 {recs:,}".replace(",", "\u00a0"))
+            if meta_parts:
+                parts.append(" | ".join(meta_parts))
+
+            # Languages and features
+            feat_parts = []
+            lang_parts = []
+            if getattr(game_info, "has_russian_audio", False):
+                lang_parts.append("RU🔊")
+            elif getattr(game_info, "has_russian_text", False):
+                lang_parts.append("RU")
+            if getattr(game_info, "has_ukrainian_audio", False):
+                lang_parts.append("UA🔊")
+            elif getattr(game_info, "has_ukrainian_text", False):
+                lang_parts.append("UA")
+            if lang_parts:
+                feat_parts.append("🌐 " + " ".join(lang_parts))
+            if getattr(game_info, "has_controller_support", False):
+                feat_parts.append("🕹 Геймпад")
+            if getattr(game_info, "has_multiplayer", False):
+                feat_parts.append("👥 Мультиплеер")
+            if feat_parts:
+                parts.append(" | ".join(feat_parts))
+
+            # Top reviews (up to 2, truncated to 120 chars)
+            reviews = getattr(game_info, "top_reviews", None) or []
+            for review_text in reviews[:2]:
+                truncated = review_text[:120].rstrip()
+                if len(review_text) > 120:
+                    truncated += "…"
+                parts.append(f'💬 "{self.escape_html(truncated)}"')
+
+        # Source links line
+        if posts:
+            source_links = []
+            seen_sources: set = set()
+            for p in posts:
+                source = p.get("source", "")
+                post_link = p.get("post_link", "")
+                if source and post_link and source not in seen_sources:
+                    seen_sources.add(source)
+                    safe_link = self.escape_html(post_link)
+                    safe_source = self.escape_html(source)
+                    source_links.append(f'<a href="{safe_link}">{safe_source}</a>')
+            if source_links:
+                parts.append("\n🔗 " + " | ".join(source_links))
+
+        # Tags
+        tag_str = self._TAGS_FREE.get(store_lower, "#free #безкоштовно") if is_free else ""
+        # Append any extra tags from the estate
+        if tags:
+            _tag_clean = re.compile(r"[^\w\u0400-\u04FF]")
+            extra_parts = [
+                "#" + _tag_clean.sub("", t.replace(" ", "_"))
+                for t in tags if t
+            ]
+            extra = " ".join(p for p in extra_parts if p != "#")
+            if extra and extra not in tag_str:
+                tag_str = (tag_str + " " + extra).strip()
+        if tag_str:
+            parts.append(tag_str)
+
+        result = "\n".join(parts)
+        if len(result) > 1024:
+            result = result[:1021] + "…"
+        return result

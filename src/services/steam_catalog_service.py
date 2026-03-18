@@ -30,14 +30,16 @@ _TOTAL_PAT = re.compile(r'([\d,\u00a0]+)\s+results? match')
 
 
 class SteamCatalogService:
-    """Fetches on-sale Steam games and UAH prices via Steam Store Search HTML.
+    """Fetches Steam games and UAH prices via Steam Store Search HTML.
 
-    Uses cc=ua&specials=1 to get only discounted games with real UAH prices.
+    By default uses cc=ua&specials=1 to get only discounted games (~5k games).
+    With specials_only=False scans the full catalog (~100k games, several hours).
     Prices are in UAH kopecks (e.g. 209900 = ₴2 099).
     """
 
-    def __init__(self):
+    def __init__(self, specials_only: bool = True):
         self._session: Optional[aiohttp.ClientSession] = None
+        self._specials_only = specials_only
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if not self._session or self._session.closed:
@@ -59,8 +61,9 @@ class SteamCatalogService:
             "start": start,
             "count": PAGE_SIZE,
             "cc": "ua",
-            "specials": 1,
         }
+        if self._specials_only:
+            params["specials"] = 1
         async with session.get(
             STEAM_SEARCH_URL, params=params, timeout=TIMEOUT, headers=HEADERS
         ) as resp:

@@ -37,21 +37,21 @@ def _stored(price_uah=None, original_price_uah=None, notified_price_uah=None):
 def test_became_free():
     monitor = make_monitor()
     stored = _stored(price_uah=49900, original_price_uah=49900, notified_price_uah=49900)
-    result = monitor._detect_change(stored, new_price=0, new_original=49900, new_discount=100)
+    result = monitor._detect_change(stored, new_price=0, new_original=49900, new_discount=100, discount_threshold=50)
     assert result == "became_free"
 
 
 def test_became_free_already_notified():
     monitor = make_monitor()
     stored = _stored(price_uah=0, original_price_uah=49900, notified_price_uah=0)
-    result = monitor._detect_change(stored, new_price=0, new_original=49900, new_discount=100)
+    result = monitor._detect_change(stored, new_price=0, new_original=49900, new_discount=100, discount_threshold=50)
     assert result is None
 
 
 def test_big_discount():
     monitor = make_monitor()
     stored = _stored(price_uah=49900, original_price_uah=49900, notified_price_uah=49900)
-    result = monitor._detect_change(stored, new_price=4990, new_original=49900, new_discount=90)
+    result = monitor._detect_change(stored, new_price=4990, new_original=49900, new_discount=90, discount_threshold=50)
     assert result == "big_discount"
 
 
@@ -59,7 +59,7 @@ def test_big_discount_below_min_threshold():
     # 49% discount is below the lowest possible threshold (50%) → _detect_change returns None
     monitor = make_monitor()
     stored = _stored(price_uah=49900, original_price_uah=49900, notified_price_uah=49900)
-    result = monitor._detect_change(stored, new_price=25449, new_original=49900, new_discount=49)
+    result = monitor._detect_change(stored, new_price=25449, new_original=49900, new_discount=49, discount_threshold=50)
     assert result is None
 
 
@@ -67,14 +67,14 @@ def test_big_discount_at_min_threshold_passes_detect_change():
     # 50% discount passes the pre-filter in _detect_change (quality gate is checked later)
     monitor = make_monitor()
     stored = _stored(price_uah=49900, original_price_uah=49900, notified_price_uah=49900)
-    result = monitor._detect_change(stored, new_price=24950, new_original=49900, new_discount=50)
+    result = monitor._detect_change(stored, new_price=24950, new_original=49900, new_discount=50, discount_threshold=50)
     assert result == "big_discount"
 
 
 def test_big_discount_already_notified_same_price():
     monitor = make_monitor()
     stored = _stored(price_uah=4990, original_price_uah=49900, notified_price_uah=4990)
-    result = monitor._detect_change(stored, new_price=4990, new_original=49900, new_discount=90)
+    result = monitor._detect_change(stored, new_price=4990, new_original=49900, new_discount=90, discount_threshold=50)
     assert result is None
 
 
@@ -82,21 +82,21 @@ def test_big_discount_price_dropped_further():
     monitor = make_monitor()
     # Was at 9900 (80% off), now dropped to 4990 (90% off) — price changed → alert
     stored = _stored(price_uah=9900, original_price_uah=49900, notified_price_uah=9900)
-    result = monitor._detect_change(stored, new_price=4990, new_original=49900, new_discount=90)
+    result = monitor._detect_change(stored, new_price=4990, new_original=49900, new_discount=90, discount_threshold=50)
     assert result == "big_discount"
 
 
 def test_always_free_skipped():
     monitor = make_monitor()
     stored = _stored(price_uah=0, original_price_uah=None, notified_price_uah=None)
-    result = monitor._detect_change(stored, new_price=0, new_original=None, new_discount=0)
+    result = monitor._detect_change(stored, new_price=0, new_original=None, new_discount=0, discount_threshold=50)
     assert result is None
 
 
 def test_no_price_change():
     monitor = make_monitor()
     stored = _stored(price_uah=49900, original_price_uah=49900, notified_price_uah=None)
-    result = monitor._detect_change(stored, new_price=49900, new_original=49900, new_discount=0)
+    result = monitor._detect_change(stored, new_price=49900, new_original=49900, new_discount=0, discount_threshold=50)
     assert result is None
 
 
@@ -259,7 +259,7 @@ def test_quality_score_very_positive_high_recs():
 
 def test_quality_score_mostly_positive_low_recs():
     from src.services.price_service import GameInfo
-    # Mostly Positive (25) + 5k recs (12) + no metacritic = 37 → threshold 75%
+    # Mostly Positive (25) + 5k recs (12) + no metacritic = 37 → score < 40 → suppressed
     info = GameInfo(review_score="Mostly Positive", recommendations_total=5_000)
     score = SteamPriceMonitor._compute_quality_score(info)
     assert score == 37
@@ -293,21 +293,20 @@ def test_threshold_score_80_plus():
     monitor = make_monitor()
     from src.services.price_service import GameInfo
     info = GameInfo(review_score="Overwhelmingly Positive", recommendations_total=200_000, metacritic=86)
-    assert monitor._quality_adjusted_threshold(info) == 50
+    assert monitor._quality_adjusted_threshold(info) == 65  # score=100 → tier >= 80 → 65%
 
 
 def test_threshold_score_below_10_suppressed():
     monitor = make_monitor()
     from src.services.price_service import GameInfo
-    info = GameInfo(recommendations_total=50)  # score=5
+    info = GameInfo(recommendations_total=50)  # score=5 < 40 → suppress
     assert monitor._quality_adjusted_threshold(info) is None
 
 
 def test_threshold_score_10_to_19():
     monitor = make_monitor()
-    from src.services.price_service import GameInfo
-    # score=15 (fallback): threshold == STEAM_DISCOUNT_THRESHOLD (90)
-    assert monitor._quality_adjusted_threshold(None) == monitor._discount_threshold
+    # score=15 (no game_info fallback) < 40 → suppress
+    assert monitor._quality_adjusted_threshold(None) is None
 
 
 # ── quality gate integration in _process_result ───────────────────────────────
@@ -362,8 +361,36 @@ def test_process_result_became_free_bypasses_quality():
     monitor.storage.update_steam_notification.assert_called_once_with(999, 0)
 
 
-def test_process_result_high_quality_50pct_passes():
-    """Very Positive game with 200k recs and Metacritic 86 → score≥80 → threshold 50% → 50% passes."""
+def test_process_result_high_quality_65pct_passes():
+    """Very Positive + 200k recs + Metacritic 86 → score=90 ≥ 80 → threshold 65% → 70% passes."""
+    from src.services.price_service import GameInfo
+    monitor = make_monitor()
+
+    stored = {
+        "appid": 1091500,
+        "name": "Cyberpunk 2077",
+        "price_uah": 139900,
+        "original_price_uah": 139900,
+        "notified_price_uah": 139900,
+        "discount_pct": 0,
+    }
+    monitor.storage.get_steam_game = AsyncMock(return_value=stored)
+    monitor.price_service.get_steam_info = AsyncMock(
+        return_value=GameInfo(
+            review_score="Very Positive",
+            recommendations_total=200_000,
+            metacritic=86,
+        )
+    )
+
+    price_data = {"price_uah": 41970, "original_price_uah": 139900, "discount_pct": 70}
+    result = asyncio.run(monitor._process_result(1091500, "Cyberpunk 2077", price_data))
+
+    assert result is True
+
+
+def test_process_result_high_quality_50pct_blocked():
+    """Same game with only 50% discount → below new 65% threshold → suppressed."""
     from src.services.price_service import GameInfo
     monitor = make_monitor()
 
@@ -387,4 +414,4 @@ def test_process_result_high_quality_50pct_passes():
     price_data = {"price_uah": 69950, "original_price_uah": 139900, "discount_pct": 50}
     result = asyncio.run(monitor._process_result(1091500, "Cyberpunk 2077", price_data))
 
-    assert result is True
+    assert result is False

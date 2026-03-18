@@ -8,6 +8,7 @@ from src.bot.bot import TelegramNewsBot
 from src.common.logger import setup_logger, logger, audit_logger, missing_data_logger
 from src.common.metrics import CycleMetrics
 from src.config.config import settings
+from src.config.run_config import is_parser_enabled, is_monitor_enabled, get_monitor_interval
 from src.models.models import Post
 from src.monitors.egs_price_monitor import EgsPriceMonitor
 from src.monitors.steam_price_monitor import SteamPriceMonitor
@@ -32,15 +33,30 @@ class NewsMonitor:
             channel_id=self.settings.TELEGRAM_CHANNEL_ID
         )
 
-        parsers = [
-            # PikabuParser(),
-            # VGTimesParser(),
-            # StopGameParser(),
+        all_parsers = [
+            ("pikabu", PikabuParser),
+            ("vgtimes", VGTimesParser),
+            ("stopgame", StopGameParser),
         ]
+        parsers = [cls() for name, cls in all_parsers if is_parser_enabled(name)]
         self.parsers = parsers
         self.parser_manager = ParserManager(parsers=parsers, storage=self.storage)
-        self.steam_monitor = SteamPriceMonitor(storage=self.storage, bot=self.bot)
-        self.egs_monitor = EgsPriceMonitor(storage=self.storage, bot=self.bot)
+        monitors = []
+        if is_monitor_enabled("steam"):
+            steam_cfg = settings.MONITORS_CONFIG.get("steam", {})
+            monitors.append(SteamPriceMonitor(
+                storage=self.storage,
+                bot=self.bot,
+                scan_interval=get_monitor_interval("steam", default=43200),
+                specials_only=bool(steam_cfg.get("specials_only", True)),
+            ))
+        if is_monitor_enabled("egs"):
+            monitors.append(EgsPriceMonitor(
+                storage=self.storage,
+                bot=self.bot,
+                scan_interval=get_monitor_interval("egs", default=43200),
+            ))
+        self.monitors = monitors
 
     async def run(self, use_streaming: bool = True):
         """Runs the monitoring loop."""
@@ -53,8 +69,7 @@ class NewsMonitor:
                 await asyncio.gather(
                     self._run_streaming(),
                     self.bot.start_polling(),
-                    self.steam_monitor.run(),
-                    self.egs_monitor.run(),
+                    *[m.run() for m in self.monitors],
                 )
             else:
                 await self._run_polling()

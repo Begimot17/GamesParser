@@ -3,7 +3,7 @@
 import asyncio
 import re
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, AsyncIterator, Optional
+from typing import AsyncGenerator, Optional
 from urllib.parse import unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup, Tag
@@ -12,88 +12,37 @@ from src.common.logger import logger, missing_data_logger
 from src.config.config import settings
 from src.models.models import Post, PostMetadata
 from src.parsers.utils.base_parser import BaseParser
-from src.services.llm_g4f import LLMG4F
-from src.services.price_service import PriceService
 
 
 class VGTimesParser(BaseParser):
     """Парсер для получения постов с VGTimes."""
 
     def __init__(self):
-        self.config = settings.PARSERS_CONFIG.get("vgtimes", {})
-        if not self.config:
-            logger.warning("VGTimes configuration not found in settings! Using defaults.")
-            self.TARGET_URLS = ["https://vgtimes.ru/free/"]
-        else:
-            self.TARGET_URLS = (
-                self.config.get("target_urls", "").split(",")
-                if isinstance(self.config.get("target_urls"), str)
-                else self.config.get("target_urls", [])
-            )
+        super().__init__(config_key="vgtimes", default_url="https://vgtimes.ru/free/")
 
-        super().__init__(default_base_url=self.TARGET_URLS[0] if self.TARGET_URLS else None)
+    # ── Pagination ────────────────────────────────────────────────────────
 
-        self.REQUEST_TIMEOUT = self.config.get("request_timeout", settings.REQUEST_TIMEOUT)
-        self.MAX_TEXT_LENGTH = self.config.get("max_text_length", settings.MAX_TEXT_LENGTH)
-        self.VALID_IMAGE_EXTENSIONS = tuple(self.config.get("valid_image_extensions", [".jpg", ".jpeg", ".png", ".gif", ".webp"]))
-        self.RATE_LIMIT_DELAY = self.config.get("rate_limit_delay", 2)
-        self.SELECTORS = self.config.get("selectors", {})
-        self.STORE_CONFIG = self.config.get("stores", {})
-
-        self.llm = LLMG4F(model_name=settings.LLM_MODEL) if settings.ENABLE_LLM else None
-        self.price_service = PriceService()
-        self._is_first_run: bool = False
-
-    def _build_page_urls(self, n: int) -> list[str]:
-        """Build list of page URLs for pagination. Page 1 = base URL, page N = ?PAGEN_1=N."""
-        base = self.TARGET_URLS[0].rstrip("/") + "/"  # https://vgtimes.ru/free/
+    def _build_page_urls(self, pages: int) -> list[str]:
+        """Page 1 = base URL, page N = ?PAGEN_1=N."""
+        base = self.TARGET_URLS[0].rstrip("/") + "/"
         urls = [base]
-        for i in range(2, n + 1):
+        for i in range(2, pages + 1):
             urls.append(f"{base}?PAGEN_1={i}")
         return urls
 
-    def _clean_store_url(self, url: str, store_name: str) -> str:
-        """Очистка и проверка URL магазина с поддержкой /go/ редиректов VGTimes."""
-        if not url:
-            return ""
+    # ── URL processing (concurrent with semaphore) ────────────────────────
 
-        if "/go/" in url:
-            parsed = urlparse(url)
-            if parsed.query:
-                decoded = unquote(parsed.query)
-                if decoded.startswith("http"):
-                    url = decoded.split("&")[0]
-                    logger.debug(f"Decoded go-URL: {url}")
-
-        return super()._clean_store_url(url, store_name)
-
-    def _extract_store_links(self, article_html: Tag) -> dict:
-        """Extract store links from article."""
-        stores: dict = {}
-        link_elements = article_html.select(self.SELECTORS.get("store_links", ""))
-        for link in link_elements:
-            href = link.get("href", "")
-            for store_name, store_info in self.STORE_CONFIG.items():
-                domain = store_info.get("domain")
-                if domain and domain in href:
-                    cleaned_url = self._clean_store_url(href, store_name)
-                    if cleaned_url:
-                        stores[store_name] = cleaned_url
-                        break
-        return stores
-
-    async def _process_url(self, target_url: str) -> AsyncIterator[Post]:
-        """Processes a single URL and yields posts."""
+    async def _process_url(self, target_url: str) -> AsyncGenerator:
         html = ""
         try:
             await self._rate_limit()
-            logger.info(f"[VGTimesParser] Processing page: {target_url}")
+            logger.info("[VGTimesParser] Processing page: %s", target_url)
             html = await self._fetch_page(target_url)
-            logger.info(f"[VGTimesParser] Got response, length: {len(html)}")
+            logger.info("[VGTimesParser] Got response, length: %d", len(html))
 
             soup = BeautifulSoup(html, "html.parser")
             articles = soup.select(self.SELECTORS["articles"])
-            logger.info(f"[VGTimesParser] Found {len(articles)} articles on page")
+            logger.info("[VGTimesParser] Found %d articles on page", len(articles))
 
             sem = asyncio.Semaphore(3)
 
@@ -101,54 +50,53 @@ class VGTimesParser(BaseParser):
                 async with sem:
                     return await self._parse_article(article)
 
-            tasks = [_fetch_with_sem(a) for a in articles]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
+            results = await asyncio.gather(*[_fetch_with_sem(a) for a in articles], return_exceptions=True)
             for result in results:
                 if isinstance(result, Exception):
                     logger.error("[VGTimesParser] Article parse error: %s", result)
                 elif result:
-                    logger.info(f"[VGTimesParser] Yielding post {result.id}")
+                    logger.info("[VGTimesParser] Yielding post %s", result.id)
                     yield result
-
         except Exception as e:
-            logger.error(f"[VGTimesParser] Unexpected error in _process_url for {target_url}: {e}", exc_info=True)
+            logger.error("[VGTimesParser] Unexpected error for %s: %s", target_url, e, exc_info=True)
             if html:
                 self._save_html_on_error(html, target_url)
 
-    async def fetch_posts(self, url: Optional[str] = None) -> list[Post]:
-        """Fetch and parse posts from VGTimes."""
-        logger.info("[VGTimesParser] Starting fetch_posts...")
-        all_posts: list[Post] = []
-        if url:
-            urls = [url]
-        else:
-            pages = self.config.get("initial_pages", 1) if self._is_first_run else 1
-            urls = self._build_page_urls(pages)
+    # ── Store link extraction ─────────────────────────────────────────────
 
-        for target_url in urls:
-            async for post in self._process_url(target_url):
-                all_posts.append(post)
-        logger.info(f"[VGTimesParser] fetch_posts completed. Total posts: {len(all_posts)}")
-        return all_posts
+    def _clean_store_url(self, url: str, store_name: str) -> str:
+        """Handle VGTimes /go/ redirect URLs before standard cleaning."""
+        if url and "/go/" in url:
+            parsed = urlparse(url)
+            if parsed.query:
+                decoded = unquote(parsed.query)
+                if decoded.startswith("http"):
+                    url = decoded.split("&")[0]
+                    logger.debug("Decoded VGTimes go-URL: %s", url)
+        return super()._clean_store_url(url, store_name)
 
-    async def stream_posts(self) -> AsyncGenerator[Post, None]:
-        """Генератор для потокового получения статей по мере их парсинга."""
-        logger.info("[VGTimesParser] Starting stream_posts...")
-        pages = self.config.get("initial_pages", 1) if self._is_first_run else 1
-        for target_url in self._build_page_urls(pages):
-            async for post in self._process_url(target_url):
-                yield post
-        logger.info("[VGTimesParser] stream_posts completed")
+    def _extract_store_links(self, article_html: Tag) -> dict:
+        stores: dict = {}
+        for link in article_html.select(self.SELECTORS.get("store_links", "")):
+            href = link.get("href", "")
+            for store_name, store_info in self.STORE_CONFIG.items():
+                domain = store_info.get("domain")
+                if domain and domain in href:
+                    cleaned = self._clean_store_url(href, store_name)
+                    if cleaned:
+                        stores[store_name] = cleaned
+                        break
+        return stores
+
+    # ── Date parsing ──────────────────────────────────────────────────────
 
     def _extract_id(self, url: str) -> Optional[str]:
-        """Extract article ID from URL."""
         match = re.search(r"/(\d+)-", url)
         return match.group(1) if match else None
 
     def _parse_date(self, date_str: str) -> Optional[datetime]:
-        """Parse date from string like '5 апреля 2025, 23:22', 'Вчера, 15:58', or 'Сегодня, 15:58'."""
-        logger.info(f"[VGTimesParser] Attempting to parse date string: '{date_str}'")
+        """Parse strings like '5 апреля 2025, 23:22', 'Вчера, 15:58', 'Сегодня, 15:58'."""
+        logger.info("[VGTimesParser] Parsing date: '%s'", date_str)
         try:
             date_str = re.sub(r"<i.*?</i>", "", date_str).strip()
             now = datetime.now(timezone(timedelta(hours=3)))
@@ -176,93 +124,75 @@ class VGTimesParser(BaseParser):
             dt = datetime.strptime(date_str, "%d %B %Y, %H:%M")
             return dt.replace(tzinfo=timezone(timedelta(hours=3)))
         except Exception as e:
-            logger.error(f"Error parsing date '{date_str}': {e}", exc_info=True)
+            logger.error("Error parsing VGTimes date '%s': %s", date_str, e, exc_info=True)
             return None
 
-    async def _parse_article(self, article_html: Tag) -> Optional[Post]:
-        """Парсинг одной статьи со страницы списка."""
+    # ── Article parsing ───────────────────────────────────────────────────
+
+    async def _parse_article(self, article_html: Tag, **kwargs) -> Optional[Post]:
         link_elem = article_html.select_one(self.SELECTORS["link"])
         if not link_elem:
-            logger.warning("[VGTimesParser] No link element found in article on list page.")
+            logger.warning("[VGTimesParser] No link element found in article")
             return None
 
         link = link_elem.get("href")
         if not link:
-            logger.warning("[VGTimesParser] Link element found but href attribute is empty.")
+            logger.warning("[VGTimesParser] Link element has empty href")
             return None
-
         if not link.startswith("https://"):
             link = urljoin(self.TARGET_URLS[0], link)
 
         article_id = self._extract_id(link)
         if not article_id:
-            logger.warning(f"[VGTimesParser] Could not extract article ID from link: {link}")
+            logger.warning("[VGTimesParser] Could not extract article ID from: %s", link)
             return None
 
         title_elem = article_html.select_one(self.SELECTORS["title"])
         title = title_elem.get_text(strip=True) if title_elem else ""
         if not title:
-            logger.warning(f"[VGTimesParser] No title found for article {article_id}")
+            logger.warning("[VGTimesParser] No title for article %s", article_id)
 
         image_elem = article_html.select_one(self.SELECTORS["image"])
-        image_url = image_elem.get("data-src") if image_elem else None
+        image_url = (image_elem.get("data-src") or image_elem.get("src")) if image_elem else None
         if not image_url:
-            image_url = image_elem.get("src") if image_elem else None
-
-        if not image_url:
-            missing_data_logger.warning(
-                "[VGTimes] No image found | post_id=%s | url=%s", article_id, link
-            )
+            missing_data_logger.warning("[VGTimes] No image | post_id=%s | url=%s", article_id, link)
 
         rating_elem = article_html.select_one(self.SELECTORS["rating"])
         rating = rating_elem.get_text(strip=True) if rating_elem else None
 
         try:
-            full_article_html = await self._fetch_page(link)
-            soup = BeautifulSoup(full_article_html, "html.parser")
+            full_html = await self._fetch_page(link)
+            soup = BeautifulSoup(full_html, "html.parser")
 
             content_elem = soup.select_one(self.SELECTORS["content"])
             content = content_elem.get_text(" ", strip=True) if content_elem else ""
 
             date_elem = soup.select_one(self.SELECTORS["date"])
-            raw_date_text = date_elem.get_text(strip=True) if date_elem else ""
-            date = self._parse_date(raw_date_text) if raw_date_text else None
+            raw_date = date_elem.get_text(strip=True) if date_elem else ""
+            date = self._parse_date(raw_date) if raw_date else None
 
             store_links = self._extract_store_links(article_html)
-
             content = self._clean_text(content)
 
             if len(content) < 50:
                 missing_data_logger.warning(
-                    "[VGTimes] Content too short (%d chars) | post_id=%s | url=%s",
-                    len(content), article_id, link
+                    "[VGTimes] Content too short (%d chars) | post_id=%s | url=%s", len(content), article_id, link,
                 )
-
             if len(content) > self.MAX_TEXT_LENGTH:
                 content = content[:self.MAX_TEXT_LENGTH] + "..."
 
             if not store_links:
                 missing_data_logger.info(
-                    "[VGTimes] No store links found (expected for news/giveaway articles) | post_id=%s | title=%s | url=%s",
-                    article_id, title, link
+                    "[VGTimes] No store links (expected for news/giveaway) | post_id=%s | title=%s | url=%s",
+                    article_id, title, link,
                 )
             elif "steam" not in store_links:
                 missing_data_logger.warning(
-                    "[VGTimes] No Steam link found | post_id=%s | title=%s | stores=%s | url=%s",
-                    article_id, title, list(store_links.keys()), link
+                    "[VGTimes] No Steam link | post_id=%s | title=%s | stores=%s | url=%s",
+                    article_id, title, list(store_links.keys()), link,
                 )
 
-            game_info_raw = {}
-            if store_links:
-                try:
-                    infos = await self.price_service.get_all_info(store_links)
-                    game_info_raw = {
-                        store: (info.to_dict() if info and not isinstance(info, list) else
-                                [i.to_dict() if i else None for i in info] if isinstance(info, list) else None)
-                        for store, info in infos.items()
-                    }
-                except Exception as e:
-                    logger.warning("[VGTimesParser] Failed to fetch game info: %s", e)
+            game_info_raw = await self._build_game_info_raw(store_links)
 
             metadata = PostMetadata(
                 rating=rating,
@@ -271,16 +201,9 @@ class VGTimesParser(BaseParser):
                 date=date,
                 game_info=game_info_raw,
             )
-
             return Post(
-                id=article_id,
-                title=title,
-                link=link,
-                content=content,
-                metadata=metadata,
-                source="VGTimes",
+                id=article_id, title=title, link=link, content=content, metadata=metadata, source="VGTimes",
             )
-
         except Exception as e:
-            logger.error(f"[VGTimesParser] Error parsing article {article_id}: {e}", exc_info=True)
+            logger.error("[VGTimesParser] Error parsing article %s: %s", article_id, e, exc_info=True)
             return None

@@ -1,0 +1,8 @@
+steam:
+  enabled: true
+  scan_interval: 3600   # seconds, 1 hou
+  specials_only: true    # false = scan full catalog (~100k games, takes several hours)
+
+egs:
+  enabled: true
+  scan_interval: 3600   # seconds, 1 hour

@@ -61,17 +61,18 @@ class Settings(BaseSettings):
     ENABLE_LLM: bool = False  # Set to True to enable LLM data enrichment
 
     # Steam price monitor settings
-    STEAM_SCAN_INTERVAL: int = 43200        # seconds, 12 hours
     STEAM_DISCOUNT_THRESHOLD: int = 90      # % discount threshold for notifications (fallback / unknown games)
     STEAM_MIN_DISCOUNT_THRESHOLD: int = 50  # lowest possible threshold (for top-quality games)
     STEAM_APPLIST_REFRESH_DAYS: int = 7     # refresh app list every N days
 
     # EGS price monitor settings
-    EGS_SCAN_INTERVAL: int = 43200          # seconds, 12 hours
     EGS_DISCOUNT_THRESHOLD: int = 90        # % discount threshold for notifications
 
     # Parsers configuration (loaded from YAML)
     PARSERS_CONFIG: Dict[str, Any] = {}
+
+    # Monitors configuration (loaded from YAML)
+    MONITORS_CONFIG: Dict[str, Any] = {}
 
     def load_parsers_config(self):
         """Loads parser configurations from a YAML file."""
@@ -80,6 +81,13 @@ class Settings(BaseSettings):
             with open(config_path, "r", encoding="utf-8") as f:
                 self.PARSERS_CONFIG = yaml.safe_load(f)
 
+    def load_monitors_config(self):
+        """Loads monitor configurations from a YAML file."""
+        config_path = self.BASE_DIR / "src" / "config" / "monitors.yml"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                self.MONITORS_CONFIG = yaml.safe_load(f)
+
     def validate_config(self) -> bool:
         """Validates essential configuration."""
         return bool(self.TELEGRAM_BOT_TOKEN and self.TELEGRAM_CHANNEL_ID)
@@ -87,6 +95,7 @@ class Settings(BaseSettings):
 # Create a global settings instance
 settings = Settings()
 settings.load_parsers_config()
+settings.load_monitors_config()
 
 # Module-level constants (Telegram limits and bot defaults)
 GAMES_PARSER_STR: str = "GamesParser"

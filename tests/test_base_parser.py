@@ -12,17 +12,16 @@ from src.parsers.utils.base_parser import BaseParser
 class ConcreteParser(BaseParser):
     """Concrete implementation of BaseParser for testing."""
 
-    async def fetch_posts(self) -> list:
-        return []
+    def _build_page_urls(self, pages: int) -> list[str]:
+        return [self.TARGET_URLS[0]] if self.TARGET_URLS else []
 
-    async def stream_posts(self):
-        return
-        yield  # make it a generator
+    async def _parse_article(self, article_html, **kwargs):
+        return None
 
 
 @pytest.fixture
 def parser():
-    return ConcreteParser(default_base_url="https://example.com")
+    return ConcreteParser(default_url="https://example.com")
 
 
 class TestBaseParserFetchPage:
@@ -93,6 +92,6 @@ class TestNormalizeUrl:
         assert result == ""
 
     def test_normalize_url_relative_no_base(self):
-        p = ConcreteParser()  # no default_base_url
+        p = ConcreteParser()  # no default_url
         result = p._normalize_url("/path")
         assert result == ""

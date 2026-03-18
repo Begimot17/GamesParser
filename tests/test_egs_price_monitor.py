@@ -35,56 +35,56 @@ def _stored(price_uah=None, original_price_uah=None, notified_price_uah=None):
 def test_became_free():
     monitor = make_monitor()
     stored = _stored(price_uah=4999, original_price_uah=4999, notified_price_uah=4999)
-    result = monitor._detect_change(stored, new_price=0, new_original=4999, new_discount=100)
+    result = monitor._detect_change(stored, new_price=0, new_original=4999, new_discount=100, discount_threshold=90)
     assert result == "became_free"
 
 
 def test_became_free_already_notified():
     monitor = make_monitor()
     stored = _stored(price_uah=0, original_price_uah=4999, notified_price_uah=0)
-    result = monitor._detect_change(stored, new_price=0, new_original=4999, new_discount=100)
+    result = monitor._detect_change(stored, new_price=0, new_original=4999, new_discount=100, discount_threshold=90)
     assert result is None
 
 
 def test_big_discount():
     monitor = make_monitor()
     stored = _stored(price_uah=4999, original_price_uah=4999, notified_price_uah=4999)
-    result = monitor._detect_change(stored, new_price=499, new_original=4999, new_discount=90)
+    result = monitor._detect_change(stored, new_price=499, new_original=4999, new_discount=90, discount_threshold=90)
     assert result == "big_discount"
 
 
 def test_big_discount_below_threshold():
     monitor = make_monitor()
     stored = _stored(price_uah=4999, original_price_uah=4999, notified_price_uah=4999)
-    result = monitor._detect_change(stored, new_price=2499, new_original=4999, new_discount=50)
+    result = monitor._detect_change(stored, new_price=2499, new_original=4999, new_discount=50, discount_threshold=90)
     assert result is None
 
 
 def test_big_discount_already_notified_same_price():
     monitor = make_monitor()
     stored = _stored(price_uah=499, original_price_uah=4999, notified_price_uah=499)
-    result = monitor._detect_change(stored, new_price=499, new_original=4999, new_discount=90)
+    result = monitor._detect_change(stored, new_price=499, new_original=4999, new_discount=90, discount_threshold=90)
     assert result is None
 
 
 def test_big_discount_price_dropped_further():
     monitor = make_monitor()
     stored = _stored(price_uah=999, original_price_uah=4999, notified_price_uah=999)
-    result = monitor._detect_change(stored, new_price=499, new_original=4999, new_discount=90)
+    result = monitor._detect_change(stored, new_price=499, new_original=4999, new_discount=90, discount_threshold=90)
     assert result == "big_discount"
 
 
 def test_always_free_skipped():
     monitor = make_monitor()
     stored = _stored(price_uah=0, original_price_uah=None, notified_price_uah=None)
-    result = monitor._detect_change(stored, new_price=0, new_original=None, new_discount=0)
+    result = monitor._detect_change(stored, new_price=0, new_original=None, new_discount=0, discount_threshold=90)
     assert result is None
 
 
 def test_no_price_change():
     monitor = make_monitor()
     stored = _stored(price_uah=4999, original_price_uah=4999, notified_price_uah=None)
-    result = monitor._detect_change(stored, new_price=4999, new_original=4999, new_discount=0)
+    result = monitor._detect_change(stored, new_price=4999, new_original=4999, new_discount=0, discount_threshold=90)
     assert result is None
 
 

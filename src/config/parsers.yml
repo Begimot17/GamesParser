@@ -1,4 +1,5 @@
 pikabu:
+  enabled: true
   request_timeout: 30
   max_text_length: 4000
   valid_image_extensions: [".jpg", ".jpeg", ".png", ".gif", ".webp"]
@@ -38,6 +39,7 @@ pikabu:
       validation_regex: "/game/[^/]+$"
 
 vgtimes:
+  enabled: true
   request_timeout: 30
   max_text_length: 4000
   valid_image_extensions: [".jpg", ".jpeg", ".png", ".gif", ".webp"]
@@ -70,6 +72,7 @@ vgtimes:
       validation_regex: "/game/[^/?#]+"
 
 stopgame:
+  enabled: false
   request_timeout: 30
   max_text_length: 4000
   valid_image_extensions: [".jpg", ".jpeg", ".png", ".gif", ".webp"]

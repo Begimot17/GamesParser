@@ -12,7 +12,6 @@ from telegram.ext import CommandHandler as TelegramCommandHandler
 from src.bot.message_formatter import MessageFormatter
 from src.bot.retry_handler import RetryHandler, retry
 from src.common.logger import logger
-from src.models.models import Post
 
 if TYPE_CHECKING:
     from src.bot.command_handler import CommandHandler
@@ -245,5 +244,3 @@ class TelegramNewsBot:
             logger.warning(f"Error validating image URL {url}: {e}")
             return False
 
-    def _format_message(self, post: Post) -> str:
-        return self.formatter.format_message(post)

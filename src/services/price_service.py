@@ -486,20 +486,3 @@ class PriceService:
                     result[store][pos] = info
 
         return result
-
-
-def _deep_find(obj, key: str):
-    """Recursively find a key in a nested dict/list."""
-    if isinstance(obj, dict):
-        if key in obj:
-            return obj[key]
-        for v in obj.values():
-            found = _deep_find(v, key)
-            if found is not None:
-                return found
-    elif isinstance(obj, list):
-        for item in obj:
-            found = _deep_find(item, key)
-            if found is not None:
-                return found
-    return None

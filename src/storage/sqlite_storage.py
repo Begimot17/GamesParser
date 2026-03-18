@@ -73,6 +73,7 @@ class SQLiteStorage(Storage):
                 )"""
             )
             await self._connection.commit()
+            await self.init_estate_tables()
             # Migrate: add title_normalized column if missing
             try:
                 await self._connection.execute(
@@ -613,6 +614,342 @@ class SQLiteStorage(Storage):
             await conn.commit()
         except Exception as e:
             logger.error(f"Error updating steam notification for {appid}: {e}", exc_info=True)
+
+    # ── Free Games Catalog ────────────────────────────────────────────────
+
+    async def init_free_games_tables(self) -> None:
+        """Create free_games_catalog table if it doesn't exist."""
+        conn = await self._get_connection()
+        await conn.execute(
+            """CREATE TABLE IF NOT EXISTS free_games_catalog (
+                id          TEXT PRIMARY KEY,
+                platform    TEXT NOT NULL,
+                name        TEXT,
+                url         TEXT,
+                image_url   TEXT,
+                description TEXT,
+                first_seen  TIMESTAMP,
+                notified_at TIMESTAMP
+            )"""
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_free_games_platform ON free_games_catalog(platform)"
+        )
+        await conn.commit()
+        logger.info("Free games catalog tables initialized")
+
+    async def get_free_game(self, gid: str) -> Optional[dict]:
+        """Get a free game record by its composite id (platform:slug)."""
+        try:
+            conn = await self._get_connection()
+            async with conn.execute(
+                "SELECT id, platform, name, url, image_url, description, first_seen, notified_at "
+                "FROM free_games_catalog WHERE id = ?",
+                (gid,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row[0], "platform": row[1], "name": row[2], "url": row[3],
+                "image_url": row[4], "description": row[5],
+                "first_seen": row[6], "notified_at": row[7],
+            }
+        except Exception as e:
+            logger.error(f"Error getting free game {gid}: {e}", exc_info=True)
+            return None
+
+    async def upsert_free_game(self, gid: str, platform: str, game: dict, notified: bool) -> None:
+        """Insert or update a free game record.
+
+        Sets first_seen on first insert; sets notified_at when notified=True.
+        """
+        try:
+            conn = await self._get_connection()
+            now = datetime.now()
+            await conn.execute(
+                """INSERT INTO free_games_catalog (id, platform, name, url, image_url, description, first_seen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO NOTHING""",
+                (gid, platform, game.get("name"), game.get("url"),
+                 game.get("image_url"), game.get("description"), now),
+            )
+            if notified:
+                await conn.execute(
+                    "UPDATE free_games_catalog SET notified_at = ? WHERE id = ? AND notified_at IS NULL",
+                    (now, gid),
+                )
+            await conn.commit()
+        except Exception as e:
+            logger.error(f"Error upserting free game {gid}: {e}", exc_info=True)
+
+    # ── Estate ───────────────────────────────────────────────────────────
+
+    _STORE_PRIORITY = {"steam": 4, "epicgames": 3, "gog": 2, "itch": 1}
+
+    async def init_estate_tables(self) -> None:
+        """Create estate tables if they don't exist."""
+        conn = await self._get_connection()
+        await conn.execute(
+            """CREATE TABLE IF NOT EXISTS estates (
+                estate_id   TEXT PRIMARY KEY,
+                title       TEXT NOT NULL,
+                store_url   TEXT,
+                store_name  TEXT,
+                is_free     INTEGER DEFAULT 0,
+                description TEXT,
+                images      TEXT,
+                tags        TEXT,
+                created_at  TIMESTAMP NOT NULL,
+                flushed_at  TIMESTAMP,
+                alert_sent  INTEGER DEFAULT 0
+            )"""
+        )
+        await conn.execute(
+            """CREATE TABLE IF NOT EXISTS estate_posts (
+                estate_id  TEXT NOT NULL,
+                post_id    TEXT NOT NULL,
+                source     TEXT NOT NULL,
+                post_link  TEXT NOT NULL,
+                added_at   TIMESTAMP NOT NULL,
+                PRIMARY KEY (estate_id, post_id, source)
+            )"""
+        )
+        await conn.execute(
+            """CREATE TABLE IF NOT EXISTS failed_estates (
+                estate_id   TEXT PRIMARY KEY,
+                estate_json TEXT NOT NULL,
+                failed_at   TIMESTAMP,
+                retry_count INTEGER DEFAULT 0,
+                last_error  TEXT
+            )"""
+        )
+        await conn.commit()
+
+    async def upsert_estate(self, estate_id: str, title: str, post) -> None:
+        """Insert or merge a post into an estate.
+
+        Store priority: steam > epicgames > gog > itch.
+        is_free = MAX(existing, new). description = longest wins.
+        images/tags = merged+dedup JSON lists.
+        flushed_at is reset to NULL on update (new post re-activates estate).
+        """
+        meta = post.metadata
+        store_links: dict = (meta.store_links or {}) if meta else {}
+        game_info_map: dict = (meta.game_info or {}) if meta else {}
+
+        # Best store from this post
+        post_store_name = None
+        post_store_url = None
+        for s in sorted(store_links.keys(), key=lambda x: self._STORE_PRIORITY.get(x, 0), reverse=True):
+            urls = store_links[s]
+            if urls:
+                post_store_name = s
+                post_store_url = str(urls[0])
+                break
+
+        # is_free
+        is_free = False
+        for raw in game_info_map.values():
+            if isinstance(raw, dict) and raw.get("is_free"):
+                is_free = True
+                break
+            if isinstance(raw, list):
+                if any(isinstance(r, dict) and r.get("is_free") for r in raw):
+                    is_free = True
+                    break
+
+        description = post.content or ""
+        images = [str(i) for i in ((meta.images or []) if meta else [])]
+        tags = [str(t) for t in ((meta.tags or []) if meta else [])]
+
+        try:
+            conn = await self._get_connection()
+            now = datetime.now()
+
+            async with conn.execute(
+                "SELECT store_name, store_url, is_free, description, images, tags "
+                "FROM estates WHERE estate_id=?",
+                (estate_id,),
+            ) as cursor:
+                existing = await cursor.fetchone()
+
+            if existing:
+                ex_store_name, ex_store_url, ex_is_free, ex_description, ex_images_json, ex_tags_json = existing
+
+                # Priority-based store merge
+                ex_priority = self._STORE_PRIORITY.get(ex_store_name or "", 0)
+                new_priority = self._STORE_PRIORITY.get(post_store_name or "", 0)
+                if new_priority > ex_priority and post_store_url:
+                    final_store_name = post_store_name
+                    final_store_url = post_store_url
+                else:
+                    final_store_name = ex_store_name
+                    final_store_url = ex_store_url
+
+                final_is_free = max(int(ex_is_free or 0), int(is_free))
+
+                ex_desc = ex_description or ""
+                final_description = description if len(description) > len(ex_desc) else ex_desc
+
+                ex_images = json.loads(ex_images_json or "[]")
+                merged_images = list(dict.fromkeys(ex_images + images))
+
+                ex_tags = json.loads(ex_tags_json or "[]")
+                merged_tags = list(dict.fromkeys(ex_tags + tags))
+
+                await conn.execute(
+                    """UPDATE estates SET
+                           store_name=?, store_url=?, is_free=?, description=?,
+                           images=?, tags=?, flushed_at=NULL
+                       WHERE estate_id=?""",
+                    (
+                        final_store_name, final_store_url, final_is_free, final_description,
+                        json.dumps(merged_images, ensure_ascii=False),
+                        json.dumps(merged_tags, ensure_ascii=False),
+                        estate_id,
+                    ),
+                )
+            else:
+                await conn.execute(
+                    """INSERT INTO estates
+                           (estate_id, title, store_url, store_name, is_free,
+                            description, images, tags, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        estate_id, title, post_store_url, post_store_name, int(is_free),
+                        description,
+                        json.dumps(images, ensure_ascii=False),
+                        json.dumps(tags, ensure_ascii=False),
+                        now,
+                    ),
+                )
+            await conn.commit()
+            logger.debug("[Estate] Upserted estate %s for title: %s", estate_id[:8], title)
+        except Exception as e:
+            logger.error("[Estate] Error upserting estate %s: %s", estate_id[:8], e, exc_info=True)
+
+    async def add_post_to_estate(self, estate_id: str, post) -> None:
+        """Register a post as part of an estate (idempotent)."""
+        try:
+            conn = await self._get_connection()
+            await conn.execute(
+                """INSERT OR IGNORE INTO estate_posts (estate_id, post_id, source, post_link, added_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (estate_id, post.id, post.source or "", str(post.link), datetime.now()),
+            )
+            await conn.commit()
+        except Exception as e:
+            logger.error("[Estate] Error adding post %s to estate %s: %s", post.id, estate_id[:8], e, exc_info=True)
+
+    async def get_pending_estates(self) -> list[dict]:
+        """Return all estates not yet flushed, with their associated posts."""
+        try:
+            conn = await self._get_connection()
+            async with conn.execute(
+                "SELECT estate_id, title, store_url, store_name, is_free, description, images, tags "
+                "FROM estates WHERE flushed_at IS NULL AND alert_sent=0"
+            ) as cursor:
+                estate_rows = await cursor.fetchall()
+
+            result = []
+            for row in estate_rows:
+                estate_id, title, store_url, store_name, is_free, description, images_json, tags_json = row
+                async with conn.execute(
+                    "SELECT post_id, source, post_link FROM estate_posts WHERE estate_id=?",
+                    (estate_id,),
+                ) as cursor:
+                    post_rows = await cursor.fetchall()
+
+                posts = [{"post_id": r[0], "source": r[1], "post_link": r[2]} for r in post_rows]
+                result.append({
+                    "estate_id": estate_id,
+                    "title": title,
+                    "store_url": store_url,
+                    "store_name": store_name,
+                    "is_free": bool(is_free),
+                    "description": description or "",
+                    "images": json.loads(images_json or "[]"),
+                    "tags": json.loads(tags_json or "[]"),
+                    "posts": posts,
+                })
+            return result
+        except Exception as e:
+            logger.error("[Estate] Error getting pending estates: %s", e, exc_info=True)
+            return []
+
+    async def mark_estate_flushed(self, estate_id: str, sent: bool) -> None:
+        """Mark an estate as flushed (processed this cycle)."""
+        try:
+            conn = await self._get_connection()
+            await conn.execute(
+                "UPDATE estates SET flushed_at=?, alert_sent=? WHERE estate_id=?",
+                (datetime.now(), int(sent), estate_id),
+            )
+            await conn.commit()
+        except Exception as e:
+            logger.error("[Estate] Error marking estate flushed %s: %s", estate_id[:8], e, exc_info=True)
+
+    async def mark_posts_sent(self, estate_id: str) -> None:
+        """Mark all posts belonging to an estate as sent in the posts log."""
+        try:
+            conn = await self._get_connection()
+            await conn.execute(
+                "UPDATE posts SET sent=1, sent_at=? "
+                "WHERE id IN (SELECT post_id FROM estate_posts WHERE estate_id=?)",
+                (datetime.now(), estate_id),
+            )
+            await conn.commit()
+        except Exception as e:
+            logger.error("[Estate] Error marking posts sent for estate %s: %s", estate_id[:8], e, exc_info=True)
+
+    # ── Estate DLQ ────────────────────────────────────────────────────────
+
+    async def save_failed_estate(self, estate_id: str, estate_json: str, error: str) -> None:
+        try:
+            conn = await self._get_connection()
+            await conn.execute(
+                """INSERT INTO failed_estates (estate_id, estate_json, failed_at, retry_count, last_error)
+                   VALUES (?, ?, ?, 0, ?)
+                   ON CONFLICT(estate_id) DO UPDATE SET
+                       last_error=excluded.last_error, failed_at=excluded.failed_at""",
+                (estate_id, estate_json, datetime.now(), error),
+            )
+            await conn.commit()
+        except Exception as e:
+            logger.error("[Estate DLQ] Error saving failed estate %s: %s", estate_id[:8], e, exc_info=True)
+
+    async def get_failed_estates(self, max_retries: int = 3) -> list[dict]:
+        try:
+            conn = await self._get_connection()
+            async with conn.execute(
+                "SELECT estate_id, estate_json, retry_count FROM failed_estates WHERE retry_count < ?",
+                (max_retries,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            return [{"estate_id": r[0], "estate_json": r[1], "retry_count": r[2]} for r in rows]
+        except Exception as e:
+            logger.error("[Estate DLQ] Error getting failed estates: %s", e, exc_info=True)
+            return []
+
+    async def delete_failed_estate(self, estate_id: str) -> None:
+        try:
+            conn = await self._get_connection()
+            await conn.execute("DELETE FROM failed_estates WHERE estate_id=?", (estate_id,))
+            await conn.commit()
+        except Exception as e:
+            logger.error("[Estate DLQ] Error deleting failed estate %s: %s", estate_id[:8], e, exc_info=True)
+
+    async def increment_estate_retry(self, estate_id: str) -> None:
+        try:
+            conn = await self._get_connection()
+            await conn.execute(
+                "UPDATE failed_estates SET retry_count = retry_count + 1 WHERE estate_id=?",
+                (estate_id,),
+            )
+            await conn.commit()
+        except Exception as e:
+            logger.error("[Estate DLQ] Error incrementing retry for estate %s: %s", estate_id[:8], e, exc_info=True)
 
     async def close(self) -> None:
         if self._connection:

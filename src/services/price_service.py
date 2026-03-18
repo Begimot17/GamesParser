@@ -158,14 +158,19 @@ class PriceService:
         m = re.search(r"/app/(\d+)", url)
         return m.group(1) if m else None
 
-    async def get_steam_info(self, url: str) -> Optional[GameInfo]:
-        """Fetch price + genre + metacritic + languages + categories from Steam API."""
+    async def get_steam_info(self, url: str, lang: str = "russian") -> Optional[GameInfo]:
+        """Fetch price + genre + metacritic + languages + categories from Steam API.
+
+        Args:
+            url: Steam store URL containing /app/{id}.
+            lang: Language for description/genre text (default 'russian'; use 'english' for estate alerts).
+        """
         app_id = self._extract_steam_app_id(url)
         if not app_id:
             missing_data_logger.warning("[Steam] Cannot extract app_id from URL: %s", url)
             return None
         try:
-            params = {"appids": app_id, "cc": "ua", "l": "russian"}
+            params = {"appids": app_id, "cc": "ua", "l": lang}
             session = await self._get_session()
 
             # Fetch appdetails and top reviews concurrently

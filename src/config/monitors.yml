@@ -6,3 +6,11 @@ steam:
 egs:
   enabled: true
   scan_interval: 3600   # seconds, 1 hour
+
+free_games:
+  enabled: true
+  scan_interval: 3600   # 1 hour
+  services:
+    gog: true
+    indiegala: true
+    gamerpower: true    # aggregator: Epic, GOG, Steam, Ubisoft, EA, Indiegala, Amazon, etc.

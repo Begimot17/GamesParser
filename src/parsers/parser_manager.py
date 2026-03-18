@@ -65,8 +65,8 @@ class ParserManager:
         except Exception:
             return False
 
-    async def stream_posts(self) -> AsyncGenerator[Post, None]:
-        """Infinite generator for streaming posts."""
+    async def stream_posts(self) -> AsyncGenerator[Optional[Post], None]:
+        """Infinite generator for streaming posts. Yields None as a cycle sentinel after all parsers complete."""
         logger.info(
             "[ParserManager] Starting infinite streaming of posts from all parsers...",
         )
@@ -102,6 +102,8 @@ class ParserManager:
                     )
                     continue
 
+            logger.info("[ParserManager] All parsers done — yielding cycle sentinel")
+            yield None  # cycle sentinel: signals end of one full scan
             logger.info(
                 f"All parsers have been checked. Waiting {settings.STREAMING_CYCLE_DELAY} seconds before next cycle...",
             )

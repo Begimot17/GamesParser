@@ -11,7 +11,9 @@ from src.common.logger import logger
 
 STEAM_SEARCH_URL = "https://store.steampowered.com/search/results/"
 PAGE_SIZE = 100
-PAGE_DELAY = 0.5  # seconds between pages
+PAGE_DELAY = 1.5        # seconds between pages
+RATE_LIMIT_SLEEP = 60   # seconds to wait on HTTP 429
+RATE_LIMIT_RETRIES = 3  # max retries after 429
 TIMEOUT = aiohttp.ClientTimeout(total=30)
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -54,7 +56,10 @@ class SteamCatalogService:
     # ── Steam Store Search ────────────────────────────────────────────────
 
     async def _fetch_page(self, start: int) -> str:
-        """Fetch one page from Steam Store Search (returns HTML string)."""
+        """Fetch one page from Steam Store Search (returns HTML string).
+
+        Retries up to RATE_LIMIT_RETRIES times on HTTP 429, sleeping RATE_LIMIT_SLEEP seconds each time.
+        """
         session = await self._get_session()
         params = {
             "query": "",
@@ -64,12 +69,29 @@ class SteamCatalogService:
         }
         if self._specials_only:
             params["specials"] = 1
-        async with session.get(
-            STEAM_SEARCH_URL, params=params, timeout=TIMEOUT, headers=HEADERS
-        ) as resp:
-            if resp.status != 200:
-                raise RuntimeError(f"Steam search start={start} returned HTTP {resp.status}")
-            return await resp.text()
+
+        for attempt in range(1, RATE_LIMIT_RETRIES + 2):  # +2: last attempt raises
+            async with session.get(
+                STEAM_SEARCH_URL, params=params, timeout=TIMEOUT, headers=HEADERS
+            ) as resp:
+                if resp.status == 429:
+                    if attempt <= RATE_LIMIT_RETRIES:
+                        logger.warning(
+                            "[SteamCatalog] HTTP 429 at start=%d (attempt %d/%d), sleeping %ds",
+                            start, attempt, RATE_LIMIT_RETRIES, RATE_LIMIT_SLEEP,
+                        )
+                        await asyncio.sleep(RATE_LIMIT_SLEEP)
+                        continue
+                    raise RuntimeError(f"Steam search start={start} returned HTTP 429 after {RATE_LIMIT_RETRIES} retries")
+                if resp.status != 200:
+                    raise RuntimeError(f"Steam search start={start} returned HTTP {resp.status}")
+                text = await resp.text()
+                logger.debug(
+                    "[SteamCatalog] Fetched start=%d: HTTP %d, body_len=%d",
+                    start, resp.status, len(text),
+                )
+                return text
+        raise RuntimeError(f"Steam search start={start}: unreachable")
 
     @staticmethod
     def _parse_total(html: str) -> int:
@@ -159,17 +181,27 @@ class SteamCatalogService:
                 break
 
             if not html.strip():
-                logger.info("[SteamCatalog] Scan complete: start=%d empty, %d total games", start, total_processed)
+                logger.warning("[SteamCatalog] Scan complete: start=%d empty response, %d total games", start, total_processed)
                 break
 
             # Extract total on first page
             if start == 0:
                 total_available = self._parse_total(html)
-                logger.info("[SteamCatalog] Total on-sale games: %d", total_available)
+                logger.info("[SteamCatalog] Total on-sale games: %d (html_len=%d)", total_available, len(html))
+                if total_available == 0:
+                    logger.warning(
+                        "[SteamCatalog] Could not parse total from HTML — possible block or format change. "
+                        "First 300 chars: %r",
+                        html[:300],
+                    )
 
             items = self._parse_results_html(html)
             if not items:
-                logger.info("[SteamCatalog] Scan complete: no items parsed at start=%d", start)
+                logger.warning(
+                    "[SteamCatalog] No items parsed at start=%d (html_len=%d). "
+                    "First 300 chars: %r",
+                    start, len(html), html[:300],
+                )
                 break
 
             for item in items:

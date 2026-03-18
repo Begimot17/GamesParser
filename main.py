@@ -11,7 +11,11 @@ from src.config.config import settings
 from src.config.run_config import is_parser_enabled, is_monitor_enabled, get_monitor_interval
 from src.models.models import Post
 from src.monitors.egs_price_monitor import EgsPriceMonitor
+from src.monitors.free_games_monitor import FreeGamesMonitor
 from src.monitors.steam_price_monitor import SteamPriceMonitor
+from src.services.gamerpower_service import GamerPowerService
+from src.services.gog_free_games_service import GogFreeGamesService
+from src.services.indiegala_free_games_service import IndieGalaFreeGamesService
 from src.parsers.parser_manager import ParserManager
 from src.parsers.pikabu_parser import PikabuParser
 from src.parsers.stopgame_parser import StopGameParser
@@ -56,6 +60,23 @@ class NewsMonitor:
                 bot=self.bot,
                 scan_interval=get_monitor_interval("egs", default=43200),
             ))
+        if is_monitor_enabled("free_games"):
+            free_cfg = settings.MONITORS_CONFIG.get("free_games", {})
+            svc_cfg = free_cfg.get("services", {})
+            services = []
+            if svc_cfg.get("gog", True):
+                services.append(GogFreeGamesService())
+            if svc_cfg.get("indiegala", True):
+                services.append(IndieGalaFreeGamesService())
+            if svc_cfg.get("gamerpower", True):
+                services.append(GamerPowerService())
+            if services:
+                monitors.append(FreeGamesMonitor(
+                    storage=self.storage,
+                    bot=self.bot,
+                    scan_interval=get_monitor_interval("free_games", default=3600),
+                    services=services,
+                ))
         self.monitors = monitors
 
     async def run(self, use_streaming: bool = True):

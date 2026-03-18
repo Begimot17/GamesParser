@@ -31,6 +31,41 @@ STORE_DISPLAY_NAMES = {
 class MessageFormatter:
     """Class for formatting messages and URLs for TelegramNewsBot."""
 
+    _HEADERS_FREE = {
+        "steam":      "🎁 Гра роздається безкоштовно на Steam!",
+        "egs":        "🎁 Гра стала безкоштовною на Epic Games Store!",
+        "epicgames":  "🎁 Гра стала безкоштовною на Epic Games Store!",
+        "gog":        "🎁 Безкоштовна гра на GOG!",
+        "indiegala":  "🎁 Безкоштовна гра на IndieGala!",
+        "ubisoft":    "🎁 Безкоштовна гра в Ubisoft Connect!",
+        "ea":         "🎁 Безкоштовна гра в EA App!",
+        "fanatical":  "🎁 Безкоштовна гра на Fanatical!",
+        "amazon":     "🎁 Безкоштовна гра в Amazon Prime Gaming!",
+        "humble":     "🎁 Безкоштовна гра на Humble Bundle!",
+        "gamerpower": "🎁 Безкоштовна гра (GamerPower)!",
+    }
+    _TAGS_FREE = {
+        "steam":      "#free #steam #безкоштовно",
+        "egs":        "#free #epic #epicgames #безкоштовно",
+        "epicgames":  "#free #epic #epicgames #безкоштовно",
+        "gog":        "#free #gog #безкоштовно",
+        "indiegala":  "#free #indiegala #безкоштовно",
+        "ubisoft":    "#free #ubisoft #безкоштовно",
+        "ea":         "#free #ea #origin #безкоштовно",
+        "fanatical":  "#free #fanatical #безкоштовно",
+        "amazon":     "#free #amazon #primegaming #безкоштовно",
+        "humble":     "#free #humblebundle #безкоштовно",
+        "gamerpower": "#free #безкоштовно",
+    }
+    _HEADERS_DISCOUNT = {
+        "egs":       "💥 Велика знижка на Epic Games Store!",
+        "epicgames": "💥 Велика знижка на Epic Games Store!",
+    }
+    _TAGS_DISCOUNT = {
+        "egs":       "#знижка #epic #epicgames",
+        "epicgames": "#знижка #epic #epicgames",
+    }
+
     def clean_url(self, url: str) -> str:
         """Очистка URL от реферальных параметров и валидация."""
         url_str = str(url) if not isinstance(url, str) else url
@@ -300,35 +335,22 @@ class MessageFormatter:
         name_link = f'<a href="{safe_url}">{safe_name}</a>'
 
         store_lower = store.lower()
-        is_egs = store_lower == "egs"
 
         if alert_type == "became_free":
-            if is_egs:
-                header = "🎁 Гра стала безкоштовною на Epic Games Store!"
-            else:
-                header = "🎁 Гра стала безкоштовною на Steam!"
+            header = self._HEADERS_FREE.get(store_lower, "🎁 Гра стала безкоштовною!")
             orig_kopecks = original_price_uah or old_price_uah or 0
             old_fmt = fmt_uah(orig_kopecks)
             saving_fmt = fmt_uah(orig_kopecks)
             price_line = f"💰 Ціна: <s>{old_fmt}</s> → Безкоштовно (зниження на {saving_fmt})"
-            if is_egs:
-                tags = "#free #epic #epicgames #безкоштовно"
-            else:
-                tags = "#free #steam #безкоштовно"
+            tags = self._TAGS_FREE.get(store_lower, "#free #steam #безкоштовно")
         else:
-            if is_egs:
-                header = "💥 Велика знижка на Epic Games Store!"
-            else:
-                header = "💥 Велика знижка на Steam!"
+            header = self._HEADERS_DISCOUNT.get(store_lower, "💥 Велика знижка на Steam!")
             orig_fmt = fmt_uah(original_price_uah)
             new_fmt = fmt_uah(new_price_uah)
             saving_kopecks = (original_price_uah or 0) - new_price_uah
             saving_fmt = fmt_uah(saving_kopecks)
             price_line = f"💰 {orig_fmt} → {new_fmt} (-{discount_pct}%, знижка {saving_fmt})"
-            if is_egs:
-                tags = "#знижка #epic #epicgames"
-            else:
-                tags = "#знижка #steam"
+            tags = self._TAGS_DISCOUNT.get(store_lower, "#знижка #steam")
 
         parts = [header, f"🎮 {name_link}"]
 

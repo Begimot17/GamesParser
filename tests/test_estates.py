@@ -274,3 +274,24 @@ def test_flush_skips_estate_that_fresh_steam_data_shows_free_forever():
 
     monitor.bot.send_message.assert_not_called()
     monitor.storage.mark_estate_flushed.assert_awaited_once_with("b" * 32, sent=False)
+
+
+class TestFreeWeekend:
+    @pytest.mark.parametrize("title, content", [
+        ("В Steam стала временно бесплатной PixARK", ""),
+        ("В Steam стали временно бесплатными 2 игры", ""),
+        ("Новая акция в Steam", "В Steam стартовали новые «бесплатные выходные», которые продлятся до 28 сентября."),
+        ("Sea of Thieves", "Бесплатно сыграть в игру можно до 13 июля."),
+    ])
+    def test_free_weekends(self, title, content):
+        assert game_keys.is_free_weekend(title, content)
+
+    @pytest.mark.parametrize("title, content", [
+        ("Халява: в Steam началась бесплатная раздача Deadshot",
+         "Навсегда забрать игру в свою библиотеку можно до 23 сентября."),
+        ("Оригинальная Castlevania стала бесплатной на смартфонах — акция продлится до конца октября",
+         "Konami открыла бесплатный доступ, скачавшие игру смогут и после окончания запускать её."),
+        ("Mindcop — 100% скидка в Epic Games Store!", ""),
+    ])
+    def test_giveaways_are_not_free_weekends(self, title, content):
+        assert not game_keys.is_free_weekend(title, content)

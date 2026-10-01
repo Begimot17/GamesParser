@@ -133,10 +133,15 @@ class NewsMonitor:
         name found in the other headline) land in one estate. If that estate was already sent,
         the sent message gets edited on the next flush instead of a duplicate being posted.
         """
+        # The channel wants temporary giveaways and deals: free-to-play games and free weekends are skipped
         game_info = (post.metadata.game_info or {}) if post.metadata else {}
-        if game_keys.is_permanently_free(post.title, game_info):
-            # Free-to-play games are not news for the channel: only temporary giveaways and deals are
-            logger.info("[Estate] Skipping post %s (%s) — free forever: %s", post.id, post.source, post.title)
+        skip_reason = (
+            "free forever" if game_keys.is_permanently_free(post.title, game_info)
+            else "free weekend" if game_keys.is_free_weekend(post.title, post.content)
+            else None
+        )
+        if skip_reason:
+            logger.info("[Estate] Skipping post %s (%s) — %s: %s", post.id, post.source, skip_reason, post.title)
             await self.storage.save_post(post, sent=False)
             await self.storage.mark_as_processed(post.id)
             return

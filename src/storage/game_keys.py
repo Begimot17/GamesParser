@@ -96,6 +96,23 @@ def is_permanently_free(title: str, game_info_map: Optional[dict] = None) -> boo
     return bool(_FOREVER_FREE_RE.search(title or ""))
 
 
+# Free weekends: the game can be played for a few days but not kept — not wanted either
+_FREE_WEEKEND_RE = re.compile(
+    r"временно\s+бесплатн|бесплатн\w*\s+выходн|free\s+weekend|бесплатн\w*\s+уикенд"
+    r"|бесплатно\s+(?:поиграть|опробовать|сыграть)|опробовать\s+бесплатно",
+    re.IGNORECASE,
+)
+# Wording of a real giveaway — the game stays in the library
+_KEEP_RE = re.compile(r"забрать|навсегда|остан\w+\s+(?:в|у)\s|оставить\s+себе|в\s+(?:свою\s+)?библиотек", re.IGNORECASE)
+
+
+def is_free_weekend(title: str, content: str = "") -> bool:
+    """True for 'play free for a few days' promotions (Steam free weekends), judged by the headline
+    and the lead of the article."""
+    text = f"{title or ''} {(content or '')[:400]}"
+    return bool(_FREE_WEEKEND_RE.search(text)) and not _KEEP_RE.search(text)
+
+
 def looks_like_giveaway(*texts: str) -> bool:
     """True when any text reads like a free-game giveaway."""
     return any(t and _GIVEAWAY_RE.search(t) for t in texts)

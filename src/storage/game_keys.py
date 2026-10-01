@@ -58,6 +58,44 @@ def is_free_from_game_info(game_info_map: dict) -> bool:
     return False
 
 
+# Headlines about games that became free-to-play (free forever) rather than a time-limited giveaway
+_FOREVER_FREE_RE = re.compile(
+    r"навсегда\s+бесплатн|бесплатн\w*\s+навсегда|перешл\w*\s+на\s+(?:полностью\s+)?бесплатн"
+    r"|бесплатн\w*\s+модел|free[- ]to[- ]play|\bf2p\b"
+    r"|можно\s+бесплатно\s+забрать\s+в\s+(?:свою\s+)?библиотеку"
+    r"|полностью\s+бесплатн|раньше\s+за\s+н\w+\s+просили",
+    re.IGNORECASE,
+)
+_PERMANENT_INFO_STORES = ("steam", "epicgames")
+
+
+def is_forever_free_info(info) -> bool:
+    """Same check for a GameInfo object (e.g. fresh Steam data fetched right before sending)."""
+    return bool(info) and _is_forever_free_info(
+        {"is_free": info.is_free, "discount_pct": info.discount_pct, "original_price": info.original_price}
+    )
+
+
+def _is_forever_free_info(info: dict) -> bool:
+    """Store data of a free-to-play game: free without a discount and without a regular price.
+    A time-limited giveaway shows up as a 100% discount from a regular price instead."""
+    return bool(info.get("is_free")) and not info.get("discount_pct") and not info.get("original_price")
+
+
+def is_permanently_free(title: str, game_info_map: Optional[dict] = None) -> bool:
+    """True for games that are free forever (F2P) — the channel only wants temporary giveaways and deals.
+
+    Store data (Steam/EGS) decides when present; otherwise the headline wording does.
+    """
+    infos = []
+    for store in _PERMANENT_INFO_STORES:
+        raw = (game_info_map or {}).get(store)
+        infos += [i for i in (raw if isinstance(raw, list) else [raw]) if isinstance(i, dict) and i]
+    if infos:
+        return all(_is_forever_free_info(i) for i in infos)
+    return bool(_FOREVER_FREE_RE.search(title or ""))
+
+
 def looks_like_giveaway(*texts: str) -> bool:
     """True when any text reads like a free-game giveaway."""
     return any(t and _GIVEAWAY_RE.search(t) for t in texts)

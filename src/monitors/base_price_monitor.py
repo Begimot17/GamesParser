@@ -77,6 +77,11 @@ class PriceMonitorBase(ABC):
         Giveaway alerts share estates with parser posts: if Pikabu/VGTimes already reported this giveaway,
         nothing is sent; otherwise the alert is registered as an estate so later posts join it.
         """
+        if alert_type == "became_free" and game_keys.is_forever_free_info(game_info):
+            # Went free-to-play for good — the channel only wants temporary giveaways and deals
+            logger.info("[%s] Skipping %r — free forever", self.LOG_PREFIX, display_name)
+            return True
+
         estate = self._estate_identity(display_name, url, store, kind_hint) if alert_type == "became_free" else None
         if estate:
             existing = await self._find_estate(estate)

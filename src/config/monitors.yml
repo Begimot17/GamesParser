@@ -11,6 +11,6 @@ free_games:
   enabled: true
   scan_interval: 3600   # 1 hour
   services:
-    gog: true
-    indiegala: true
+    gog: false         # GOG catalog of permanently free games — not wanted
+    indiegala: false   # IndieGala freebies are permanently free games — not wanted
     gamerpower: true    # aggregator: Epic, GOG, Steam, Ubisoft, EA, Indiegala, Amazon, etc.

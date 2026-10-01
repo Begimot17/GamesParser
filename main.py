@@ -133,6 +133,14 @@ class NewsMonitor:
         name found in the other headline) land in one estate. If that estate was already sent,
         the sent message gets edited on the next flush instead of a duplicate being posted.
         """
+        game_info = (post.metadata.game_info or {}) if post.metadata else {}
+        if game_keys.is_permanently_free(post.title, game_info):
+            # Free-to-play games are not news for the channel: only temporary giveaways and deals are
+            logger.info("[Estate] Skipping post %s (%s) — free forever: %s", post.id, post.source, post.title)
+            await self.storage.save_post(post, sent=False)
+            await self.storage.mark_as_processed(post.id)
+            return
+
         identity = game_keys.post_identity(post)
         keys, kind = identity["keys"], identity["kind"]
 
@@ -175,18 +183,19 @@ class NewsMonitor:
             logger.warning("[Estate] Steam enrichment failed for %s: %s", url, e)
             return None
 
-    async def _render_estate(self, estate: dict) -> tuple[str, list[str]]:
-        """Return (caption, images) for an estate."""
-        game_info = await self._enrich_with_steam(estate)
+    async def _render_estate(self, estate: dict, game_info=None) -> tuple[str, list[str]]:
+        """Return (caption, images) for an estate. game_info: fresh Steam data, fetched if not given."""
+        if game_info is None:
+            game_info = await self._enrich_with_steam(estate)
         text = self.bot.formatter.format_estate_alert(estate, game_info=game_info)
         images: list[str] = [i for i in estate.get("images", []) if isinstance(i, str) and i.startswith("https://")]
         if game_info and getattr(game_info, "header_image", None):
             images = [game_info.header_image] + images
         return text, images[:1]
 
-    async def _send_estate(self, estate: dict) -> Optional[SentMessage]:
+    async def _send_estate(self, estate: dict, game_info=None) -> Optional[SentMessage]:
         """Format and send one estate alert. Returns the sent message reference or None."""
-        text, images = await self._render_estate(estate)
+        text, images = await self._render_estate(estate, game_info)
         return await self.bot.send_message(text, images=images or None)
 
     async def _update_sent_estate(self, estate: dict) -> None:
@@ -210,7 +219,14 @@ class NewsMonitor:
             logger.info("[Estate] Flushing %d estate(s)...", len(estates))
         for estate in estates:
             try:
-                ref = await self._send_estate(estate)
+                game_info = await self._enrich_with_steam(estate)
+                if game_keys.is_forever_free_info(game_info):
+                    # Parsers may miss store data; fresh Steam data shows the game is free-to-play
+                    logger.info("[Estate] Not sending estate %s — free forever: %s",
+                                estate["estate_id"][:8], estate["title"])
+                    await self.storage.mark_estate_flushed(estate["estate_id"], sent=False)
+                    continue
+                ref = await self._send_estate(estate, game_info)
                 await self.storage.mark_estate_flushed(
                     estate["estate_id"],
                     sent=bool(ref),

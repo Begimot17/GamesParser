@@ -219,3 +219,58 @@ def test_steam_bbcode_is_stripped_from_reviews():
     estate["games"][0]["info"]["steam"]["top_reviews"] = ["[b]Приятное приключение[/b] на один [i]час[/i]"]
     text = MessageFormatter().format_estate_alert(estate)
     assert '💬 "Приятное приключение на один час"' in text
+
+
+# ── free-forever filter ───────────────────────────────────────────────────
+
+class TestForeverFree:
+    giveaway = {"name": "Deadshot", "is_free": True, "discount_pct": 100, "original_price": "130₴", "price": "Бесплатно"}
+    f2p = {"name": "TomoTomo", "is_free": True, "discount_pct": 0, "original_price": None, "price": None}
+
+    @pytest.mark.parametrize("title", [
+        "В Steam навсегда бесплатными стали сразу 8 игр — от необычного шутера до хоррора",
+        "В Steam можно бесплатно забрать в свою библиотеку 5 игр. Есть лавкрафтовский хоррор",
+        "В Steam полностью бесплатной стала игра Hayfever про почтальона",
+        "Игра о безумных войнах между соседями стала бесплатной — раньше за неё просили 385 рублей в Steam",
+    ])
+    def test_free_to_play_headlines(self, title):
+        assert game_keys.is_permanently_free(title, {})
+
+    @pytest.mark.parametrize("title", [
+        "Халява: в Steam началась бесплатная раздача хоррор-шутера Deadshot",
+        "В Steam стали временно бесплатными 2 игры. Есть хардкорный онлайн-шутер",
+        "Mindcop и Shogun Showdown — 100% скидка в Epic Games Store!",
+        "Скидка на Zenonia (Steam)",
+    ])
+    def test_giveaways_and_deals_pass(self, title):
+        assert not game_keys.is_permanently_free(title, {})
+
+    def test_store_data_decides_over_headline(self):
+        title = "В Steam можно бесплатно забрать в библиотеку Deadshot"
+        assert not game_keys.is_permanently_free(title, {"steam": self.giveaway})
+        assert game_keys.is_permanently_free("Халява: TomoTomo", {"steam": self.f2p})
+
+    def test_bundle_with_one_paid_game_is_kept(self):
+        assert not game_keys.is_permanently_free("Раздача", {"steam": [self.f2p, self.giveaway]})
+
+
+def test_flush_skips_estate_that_fresh_steam_data_shows_free_forever():
+    from src.services.price_service import GameInfo
+    with patch("src.bot.bot.Bot"), patch("src.bot.bot.request.HTTPXRequest"), patch("main.SQLiteStorage"):
+        from main import NewsMonitor
+        monitor = NewsMonitor()
+    estate = {"estate_id": "b" * 32, "title": "Neighbors", "games": [
+        {"name": "Neighbors", "links": {"steam": "https://store.steampowered.com/app/1732430/x/"}, "info": {}}]}
+    monitor.bot = MagicMock()
+    monitor.bot.send_message = AsyncMock()
+    monitor._price_service = MagicMock()
+    monitor._price_service.get_steam_info = AsyncMock(return_value=GameInfo(name="Neighbors", is_free=True))
+    monitor.storage = MagicMock()
+    monitor.storage.get_pending_estates = AsyncMock(return_value=[estate])
+    monitor.storage.get_estates_to_edit = AsyncMock(return_value=[])
+    monitor.storage.mark_estate_flushed = AsyncMock()
+
+    asyncio.run(monitor._flush_pending_estates())
+
+    monitor.bot.send_message.assert_not_called()
+    monitor.storage.mark_estate_flushed.assert_awaited_once_with("b" * 32, sent=False)

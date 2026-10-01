@@ -58,6 +58,8 @@ _DEADLINE_RE = re.compile(
     r"\bдо\s+(\d{1,2})\s+(" + "|".join(_MONTHS) + r")\b(?:[^.\n]{0,15}?(\d{1,2}:\d{2}))?",
     re.IGNORECASE,
 )
+# Steam BBCode markup in reviews/descriptions: [b], [/i], [url=...], [h1], [*]
+_BBCODE_RE = re.compile(r"\[/?(?:b|i|u|s|h[1-6]|url|spoiler|quote|list|olist|\*|strike|code|hr|table|tr|td|th|noparse)(?:=[^\]]*)?\]", re.IGNORECASE)
 # Pikabu/VGTimes page chrome that leaks into post text
 _BOILERPLATE_RE = re.compile(r"Показать полностью(?:\s*\d+)?|Перейти к видео|\b\d+/\d+\b(?=\s*•)", re.IGNORECASE)
 
@@ -167,7 +169,8 @@ class MessageFormatter:
 
         reviews = getattr(game_info, "top_reviews", None) or []
         for review_text in reviews[:2]:
-            review_text = re.sub(r"\s+", " ", html.unescape(review_text)).strip()
+            review_text = _BBCODE_RE.sub("", html.unescape(review_text))  # Steam reviews use [b]…[/b]
+            review_text = re.sub(r"\s+", " ", review_text).strip()
             truncated = review_text[:120].rstrip()
             if len(review_text) > 120:
                 truncated += "…"
@@ -275,6 +278,7 @@ class MessageFormatter:
             return ""
         text = html.unescape(html.unescape(text))
         text = re.sub(r"<[^>]+>", " ", text)
+        text = _BBCODE_RE.sub("", text)
         text = re.sub(r"https?://\S+", "", text)
         text = _BOILERPLATE_RE.sub("", text)
         text = re.sub(r"\s+", " ", text).strip(" |")

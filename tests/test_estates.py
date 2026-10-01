@@ -212,3 +212,10 @@ class TestEstateFormatting:
         text = self.formatter.format_estate_alert(self._estate(games=[], posts=[
             {"source": "VGTimes", "post_link": "https://vgtimes.ru/1"}]))
         assert text.startswith('🎁 <b><a href="https://vgtimes.ru/1">')
+
+
+def test_steam_bbcode_is_stripped_from_reviews():
+    estate = TestEstateFormatting()._estate()
+    estate["games"][0]["info"]["steam"]["top_reviews"] = ["[b]Приятное приключение[/b] на один [i]час[/i]"]
+    text = MessageFormatter().format_estate_alert(estate)
+    assert '💬 "Приятное приключение на один час"' in text

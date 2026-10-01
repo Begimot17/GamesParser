@@ -16,6 +16,7 @@ import pytest
 from src.bot.bot import TelegramNewsBot
 from src.config.config import settings
 from src.models.models import Post, PostMetadata
+from src.storage import game_keys
 
 
 # Skip all tests if TEST_CHANNEL_ID is not configured
@@ -65,7 +66,7 @@ def make_post(
 
 async def send_post(bot: TelegramNewsBot, post: Post) -> bool:
     """Вспомогательная функция: форматирует и отправляет пост, затем закрывает бота."""
-    message = bot.formatter.format_message(post)
+    message = bot.formatter.format_estate_alert(game_keys.estate_from_post(post))
     images = post.metadata.images if post.metadata.images else None
     result = await bot.send_message(message, images=images)
     await bot.close()

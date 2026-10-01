@@ -9,7 +9,6 @@ from urllib.parse import unquote, urljoin, urlparse
 from bs4 import BeautifulSoup, Tag
 
 from src.common.logger import logger, missing_data_logger
-from src.config.config import settings
 from src.models.models import Post, PostMetadata
 from src.parsers.utils.base_parser import BaseParser
 

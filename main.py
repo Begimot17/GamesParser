@@ -1,14 +1,13 @@
 import asyncio
 import json
-import logging
 import re
 import sys
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from typing import Optional
 
 from src.bot.bot import SentMessage, TelegramNewsBot
-from src.common.logger import setup_logger, logger, audit_logger, missing_data_logger
-from src.common.metrics import CycleMetrics
+from src.common.logger import audit_logger, logger, missing_data_logger
 from src.config.config import settings
 from src.config.run_config import is_parser_enabled, is_monitor_enabled, get_monitor_interval
 from src.models.models import Post
@@ -25,7 +24,6 @@ from src.parsers.stopgame_parser import StopGameParser
 from src.parsers.vgtimes_parser import VGTimesParser
 from src.storage import game_keys
 from src.storage.sqlite_storage import SQLiteStorage
-from typing import Optional
 
 
 class NewsMonitor:
@@ -84,22 +82,18 @@ class NewsMonitor:
                 ))
         self.monitors = monitors
 
-    async def run(self, use_streaming: bool = True):
-        """Runs the monitoring loop."""
+    async def run(self):
+        """Runs parsers, price monitors and bot command polling until stopped."""
         logger.info("Starting NewsMonitor...")
         await self.storage.init_estate_tables()
         try:
-            if use_streaming:
-                from src.bot.command_handler import CommandHandler
-                cmd_handler = CommandHandler(self.storage, self)
-                self.bot.register_commands(cmd_handler)
-                await asyncio.gather(
-                    self._run_streaming(),
-                    self.bot.start_polling(),
-                    *[m.run() for m in self.monitors],
-                )
-            else:
-                await self._run_polling()
+            from src.bot.command_handler import CommandHandler
+            self.bot.register_commands(CommandHandler(self.storage, self))
+            await asyncio.gather(
+                self._run_streaming(),
+                self.bot.start_polling(),
+                *[m.run() for m in self.monitors],
+            )
         except KeyboardInterrupt:
             logger.info("NewsMonitor stopped by user.")
         finally:
@@ -119,17 +113,17 @@ class NewsMonitor:
             )
         return safe
 
-    def _audit_post(self, post: Post, success: bool) -> None:
-        """Write audit log entry for a sent post."""
-        store_keys = list(post.metadata.store_links.keys()) if post.metadata and post.metadata.store_links else []
+    def _audit_estate(self, estate: dict, ref: Optional[SentMessage]) -> None:
+        """Write one logs/audit.log line per estate send attempt."""
         audit_logger.info(json.dumps({
-            "ts": datetime.utcnow().isoformat(),
-            "post_id": post.id,
-            "source": post.source,
-            "title": post.title,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "estate_id": estate.get("estate_id"),
+            "title": estate.get("title"),
+            "sources": [p.get("source") for p in estate.get("posts", [])],
+            "posts": [p.get("post_id") for p in estate.get("posts", [])],
             "channel": self.settings.TELEGRAM_CHANNEL_ID,
-            "stores": store_keys,
-            "sent": success,
+            "message_id": getattr(ref, "message_id", None),
+            "sent": bool(ref),
         }, ensure_ascii=False))
 
     async def _add_post_to_estate(self, post: Post) -> None:
@@ -139,15 +133,8 @@ class NewsMonitor:
         name found in the other headline) land in one estate. If that estate was already sent,
         the sent message gets edited on the next flush instead of a duplicate being posted.
         """
-        meta = post.metadata
-        games = game_keys.games_from_links(meta.store_links or {}, meta.game_info or {}) if meta else []
-        game_keys.apply_title_names(games, post.title)
-        is_free = (
-            SQLiteStorage._is_free_from_game_info((meta.game_info or {}) if meta else {})
-            or game_keys.looks_like_giveaway(post.title)
-        )
-        kind = game_keys.event_kind(is_free, post.title)
-        keys = game_keys.estate_keys(post.title, games)
+        identity = game_keys.post_identity(post)
+        keys, kind = identity["keys"], identity["kind"]
 
         estate_id = await self.storage.find_matching_estate(keys, post.title, kind)
         if estate_id:
@@ -160,17 +147,16 @@ class NewsMonitor:
             estate_id,
             post.title,
             kind=kind,
-            is_free=is_free,
+            is_free=identity["is_free"],
             description=post.content or "",
             source=post.source,
             images=self._safe_images(post),
-            tags=(meta.tags or []) if meta else [],
-            games=games,
+            tags=(post.metadata.tags or []) if post.metadata else [],
+            games=identity["games"],
             keys=keys,
         )
         await self.storage.add_post_to_estate(estate_id, post)
         await self.storage.save_post(post, sent=False)
-        await self.storage.mark_title_seen(post.title, post.id, post.source)
         await self.storage.mark_as_processed(post.id)
         if already_sent:
             logger.info("[Estate] Estate %s was already sent — its message will be updated", estate_id[:8])
@@ -231,6 +217,7 @@ class NewsMonitor:
                     message_id=getattr(ref, "message_id", None),
                     is_caption=getattr(ref, "is_caption", False),
                 )
+                self._audit_estate(estate, ref)
                 if ref:
                     await self.storage.mark_posts_sent(estate["estate_id"])
                     logger.info("[Estate] Sent estate %s: %s", estate["estate_id"][:8], estate["title"])
@@ -284,40 +271,12 @@ class NewsMonitor:
                 logger.error("[Estate DLQ] Error retrying estate %s: %s", estate_id[:8], e, exc_info=True)
                 await self.storage.increment_estate_retry(estate_id)
 
-    async def _retry_failed_posts(self) -> None:
-        """Attempt to resend posts from the Dead Letter Queue."""
-        failed = await self.storage.get_failed_posts(max_retries=3)
-        if not failed:
-            return
-        logger.info("[DLQ] Retrying %d failed posts", len(failed))
-        for entry in failed:
-            post_id = entry["id"]
-            try:
-                post_data = json.loads(entry["post_json"])
-                from src.models.models import Post as PostModel
-                post = PostModel.model_validate(post_data)
-                success = await self.bot.send_message(
-                    self.bot.formatter.format_message(post),
-                    images=self._safe_images(post)
-                )
-                if success:
-                    await self.storage.mark_as_processed(post_id)
-                    await self.storage.delete_failed_post(post_id)
-                    self._audit_post(post, success=True)
-                    logger.info("[DLQ] Retry succeeded for post %s", post_id)
-                else:
-                    await self.storage.increment_retry(post_id)
-                    logger.warning("[DLQ] Retry failed for post %s", post_id)
-            except Exception as e:
-                logger.error("[DLQ] Error retrying post %s: %s", post_id, e, exc_info=True)
-                await self.storage.increment_retry(post_id)
-
     async def _run_streaming(self):
         """Runs the monitoring loop using streaming with estate-based grouping."""
         logger.info("Starting streaming mode...")
         async for item in self.parser_manager.stream_posts():
             if item is None:
-                # End-of-cycle sentinel: flush estates, retry DLQs, daily cleanup
+                # End-of-cycle sentinel: flush estates, retry the DLQ, daily cleanup
                 today = date.today()
                 if self._last_cleanup != today:
                     try:
@@ -330,7 +289,6 @@ class NewsMonitor:
 
                 await self._flush_pending_estates()
                 await self._retry_failed_estates()
-                await self._retry_failed_posts()
                 continue
 
             post: Post = item
@@ -343,40 +301,12 @@ class NewsMonitor:
             except Exception as e:
                 logger.error("Error accumulating post %s into estate: %s", post.id, e, exc_info=True)
 
-    async def _run_polling(self):
-        """Runs the monitoring loop using polling (legacy)."""
-        logger.info("Starting polling mode...")
-        while True:
-            try:
-                posts = await self.parser_manager.fetch_all_posts()
-                for post in posts:
-                    if await self.storage.is_processed(post.id):
-                        continue
-
-                    logger.info("New post found: %s", post.title)
-                    success = await self.bot.send_message(
-                        self.bot.formatter.format_message(post),
-                        images=self._safe_images(post)
-                    )
-
-                    if success:
-                        await self.storage.mark_as_processed(post.id)
-
-                    await asyncio.sleep(self.settings.POST_PROCESSING_DELAY)
-
-                logger.info("Sleeping for %s seconds...", self.settings.CHECK_INTERVAL)
-                await asyncio.sleep(self.settings.CHECK_INTERVAL)
-
-            except Exception as e:
-                logger.error("Error in polling loop: %s", e, exc_info=True)
-                await asyncio.sleep(self.settings.CHECK_INTERVAL)
-
 
 def main() -> None:
     """Entry point."""
     try:
         monitor = NewsMonitor()
-        asyncio.run(monitor.run(use_streaming=True))
+        asyncio.run(monitor.run())
     except ValueError as e:
         logger.error("Configuration error: %s", e)
         sys.exit(1)

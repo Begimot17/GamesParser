@@ -4,7 +4,6 @@ Aggregates giveaways from Epic, GOG, Steam, Ubisoft, EA/Origin, Indiegala, and m
 Public API — no auth required.
 """
 
-import asyncio
 import re
 from typing import Optional
 

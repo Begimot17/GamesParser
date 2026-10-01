@@ -1,7 +1,6 @@
 """Tests for EgsCatalogService (Epic GraphQL-backed)."""
 
 import asyncio
-from unittest.mock import MagicMock
 
 from src.services.egs_catalog_service import EgsCatalogService
 

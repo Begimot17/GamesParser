@@ -20,41 +20,6 @@ class ParserManager:
             f"[ParserManager] Parsers initialized: {[type(p).__name__ for p in self.parsers]}",
         )
 
-    async def fetch_all_posts(self) -> list[Post]:
-        """Fetches posts from all configured parsers in parallel."""
-        logger.info("[ParserManager] Fetching posts from all parsers (parallel)...")
-
-        async def _fetch_one(parser: BaseParser) -> list[Post]:
-            try:
-                async with parser:
-                    posts = await parser.fetch_posts()
-                    logger.info(
-                        f"[ParserManager] {type(parser).__name__} returned {len(posts)} posts",
-                    )
-                    return posts
-            except asyncio.TimeoutError:
-                logger.error("[ParserManager] Timeout fetching from %s", type(parser).__name__)
-                return []
-            except Exception as e:
-                logger.error(
-                    f"[ParserManager] Error fetching posts from {type(parser).__name__}: {e}",
-                    exc_info=True,
-                )
-                return []
-
-        results = await asyncio.gather(*[_fetch_one(p) for p in self.parsers])
-        all_posts: list[Post] = [post for posts in results for post in posts]
-
-        if self.storage:
-            filtered: list[Post] = []
-            for post in all_posts:
-                if not await self.storage.is_processed(post.id):
-                    filtered.append(post)
-            all_posts = filtered
-
-        logger.info("[ParserManager] Total posts fetched: %s", len(all_posts))
-        return all_posts
-
     async def _get_is_first_run(self) -> bool:
         """Returns True if the posts table is empty (first run)."""
         if not self.storage:

@@ -16,6 +16,7 @@ from src.bot.bot import TelegramNewsBot
 from src.config.config import settings
 from src.parsers.pikabu_parser import PikabuParser
 from src.parsers.vgtimes_parser import VGTimesParser
+from src.storage import game_keys
 from src.storage.sqlite_storage import SQLiteStorage
 
 
@@ -36,7 +37,7 @@ async def run_parser_and_send(parser, bot: TelegramNewsBot, storage: SQLiteStora
         if await storage.is_processed(post.id):
             continue
 
-        message = bot.formatter.format_message(post)
+        message = bot.formatter.format_estate_alert(game_keys.estate_from_post(post))
         images = post.metadata.images if post.metadata and post.metadata.images else None
         success = await bot.send_message(message, images=images)
 

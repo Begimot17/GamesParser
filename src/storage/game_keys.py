@@ -48,6 +48,16 @@ def compact(text: str) -> str:
     return re.sub(r"[\W_]+", "", (text or "").lower().replace("ё", "е"))
 
 
+def is_free_from_game_info(game_info_map: dict) -> bool:
+    """True if any store's GameInfo (a dict, or a list of dicts for bundles) marks the game as free."""
+    for raw in (game_info_map or {}).values():
+        if isinstance(raw, dict) and raw.get("is_free"):
+            return True
+        if isinstance(raw, list) and any(isinstance(r, dict) and r.get("is_free") for r in raw):
+            return True
+    return False
+
+
 def looks_like_giveaway(*texts: str) -> bool:
     """True when any text reads like a free-game giveaway."""
     return any(t and _GIVEAWAY_RE.search(t) for t in texts)
@@ -107,6 +117,8 @@ def name_from_url(store: str, url: str) -> Optional[str]:
     else:
         slug = key.split(":", 1)[1].split("/")[-1]
     name = re.sub(r"[-_]+", " ", slug).strip()
+    if name.islower():  # EGS/GOG/itch slugs are lowercase: 'the forgotten city' → 'The Forgotten City'
+        name = name.title()
     return name or None
 
 
@@ -206,6 +218,36 @@ def merge_games(existing: list[dict], new: Iterable[dict]) -> list[dict]:
         elif not target["name"]:
             target["name"] = game.get("name", "")
     return existing
+
+
+def post_identity(post) -> dict:
+    """What identifies the game event of a parsed Post: {games, is_free, kind, keys}."""
+    meta = post.metadata
+    games = games_from_links(meta.store_links or {}, meta.game_info or {}) if meta else []
+    apply_title_names(games, post.title)
+    is_free = is_free_from_game_info((meta.game_info or {}) if meta else {}) or looks_like_giveaway(post.title)
+    return {
+        "games": games,
+        "is_free": is_free,
+        "kind": event_kind(is_free, post.title),
+        "keys": estate_keys(post.title, games),
+    }
+
+
+def estate_from_post(post) -> dict:
+    """A single-post estate dict, e.g. to preview how a post would be formatted."""
+    identity = post_identity(post)
+    return {
+        "estate_id": f"preview-{post.id}",
+        "title": post.title,
+        "kind": identity["kind"],
+        "is_free": identity["is_free"],
+        "description": post.content or "",
+        "images": list((post.metadata.images or []) if post.metadata else []),
+        "tags": list((post.metadata.tags or []) if post.metadata else []),
+        "games": identity["games"],
+        "posts": [{"post_id": post.id, "source": post.source or "", "post_link": str(post.link), "title": post.title}],
+    }
 
 
 def estate_keys(title: str, games: list[dict]) -> set[str]:

@@ -89,9 +89,9 @@ class TestCommandHandlerRecent(unittest.IsolatedAsyncioTestCase):
 class TestCommandHandlerRetry(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.storage = MagicMock()
-        self.storage.get_failed_posts = AsyncMock(return_value=[{"id": "p1"}])
+        self.storage.get_failed_estates = AsyncMock(return_value=[{"estate_id": "e1"}])
         self.monitor = MagicMock()
-        self.monitor._retry_failed_posts = AsyncMock()
+        self.monitor._retry_failed_estates = AsyncMock()
         self.handler = CommandHandler(self.storage, self.monitor)
 
     @patch("src.bot.command_handler.settings")
@@ -101,18 +101,18 @@ class TestCommandHandlerRetry(unittest.IsolatedAsyncioTestCase):
 
         await self.handler.cmd_retry(update, make_context())
 
-        self.monitor._retry_failed_posts.assert_called_once()
-        assert update.message.reply_text.call_count == 2  # "Повторна спроба…" + "✅ Retry завершено."
+        self.monitor._retry_failed_estates.assert_called_once()
+        assert update.message.reply_text.call_count == 2  # "Повторная попытка…" + "✅ Повтор завершён."
 
     @patch("src.bot.command_handler.settings")
     async def test_cmd_retry_empty_dlq(self, mock_settings):
         mock_settings.ADMIN_USER_IDS = []
-        self.storage.get_failed_posts = AsyncMock(return_value=[])
+        self.storage.get_failed_estates = AsyncMock(return_value=[])
         update = make_update()
 
         await self.handler.cmd_retry(update, make_context())
 
-        self.monitor._retry_failed_posts.assert_not_called()
+        self.monitor._retry_failed_estates.assert_not_called()
         text = update.message.reply_text.call_args[0][0]
         assert "пуста" in text or "empty" in text.lower()
 

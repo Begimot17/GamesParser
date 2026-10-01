@@ -101,88 +101,6 @@ class TestSQLiteStorage(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result_unknown)
 
 
-class TestDLQ(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.db_path = str(Path(__file__).parent / "test_dlq.db")
-        self.storage = SQLiteStorage(self.db_path)
-
-    async def asyncTearDown(self):
-        await self.storage.close()
-        if Path(self.db_path).exists():
-            os.remove(self.db_path)
-
-    async def test_save_failed_post(self):
-        await self.storage.save_failed_post("p1", '{"id": "p1"}', "send failed")
-        failed = await self.storage.get_failed_posts(max_retries=3)
-        self.assertEqual(len(failed), 1)
-        self.assertEqual(failed[0]["id"], "p1")
-        self.assertEqual(failed[0]["retry_count"], 0)
-
-    async def test_get_failed_posts_filters_max_retries(self):
-        await self.storage.save_failed_post("p1", '{}', "err")
-        # Increment retry 3 times → should be excluded
-        await self.storage.increment_retry("p1")
-        await self.storage.increment_retry("p1")
-        await self.storage.increment_retry("p1")
-
-        failed = await self.storage.get_failed_posts(max_retries=3)
-        self.assertEqual(len(failed), 0)
-
-    async def test_increment_retry(self):
-        await self.storage.save_failed_post("p2", '{}', "err")
-        await self.storage.increment_retry("p2")
-
-        failed = await self.storage.get_failed_posts(max_retries=3)
-        self.assertEqual(failed[0]["retry_count"], 1)
-
-    async def test_delete_failed_post(self):
-        await self.storage.save_failed_post("p3", '{}', "err")
-        await self.storage.delete_failed_post("p3")
-        failed = await self.storage.get_failed_posts(max_retries=3)
-        self.assertEqual(len(failed), 0)
-
-
-class TestTitleDedup(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        self.db_path = str(Path(__file__).parent / "test_dedup.db")
-        self.storage = SQLiteStorage(self.db_path)
-
-    async def asyncTearDown(self):
-        await self.storage.close()
-        if Path(self.db_path).exists():
-            os.remove(self.db_path)
-
-    async def test_title_dedup_same_title(self):
-        """Одинаковый заголовок с двух источников — второй определяется как дубль."""
-        await self.storage.mark_title_seen("Half-Life 3 Free", "post_100", "VGTimes")
-
-        seen, orig_id, orig_source = await self.storage.is_title_seen("Half-Life 3 Free")
-        self.assertTrue(seen)
-        self.assertEqual(orig_id, "post_100")
-        self.assertEqual(orig_source, "VGTimes")
-
-    async def test_title_dedup_different_titles(self):
-        """Разные заголовки — оба проходят."""
-        await self.storage.mark_title_seen("Game A", "post_1", "Pikabu")
-
-        seen_a, _, _ = await self.storage.is_title_seen("Game A")
-        seen_b, _, _ = await self.storage.is_title_seen("Game B")
-
-        self.assertTrue(seen_a)
-        self.assertFalse(seen_b)
-
-    async def test_title_dedup_case_insensitive(self):
-        """Хэш нечувствителен к регистру."""
-        await self.storage.mark_title_seen("GAME X", "post_5", "StopGame")
-
-        seen, _, _ = await self.storage.is_title_seen("game x")
-        self.assertTrue(seen)
-
-    async def test_title_not_seen_initially(self):
-        seen, _, _ = await self.storage.is_title_seen("Brand New Title")
-        self.assertFalse(seen)
-
-
 class TestPostsLog(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.db_path = str(Path(__file__).parent / "test_posts_log.db")
@@ -273,48 +191,6 @@ class TestPostsLog(unittest.IsolatedAsyncioTestCase):
         stats = await self.storage.get_posts_stats()
         self.assertEqual(stats["total"], 0)
         self.assertEqual(stats["sent"], 0)
-
-
-class TestFuzzyTitleDedup(unittest.IsolatedAsyncioTestCase):
-    """Нечёткая дедупликация: 'Game X бесплатно' vs 'Game X стала бесплатной'."""
-
-    async def asyncSetUp(self):
-        self.db_path = str(Path(__file__).parent / "test_fuzzy_dedup.db")
-        self.storage = SQLiteStorage(self.db_path)
-
-    async def asyncTearDown(self):
-        await self.storage.close()
-        if Path(self.db_path).exists():
-            os.remove(self.db_path)
-
-    async def test_fuzzy_near_duplicate_detected(self):
-        """'Borderlands 3 бесплатно' и 'Borderlands 3 стала бесплатной' — дубль."""
-        await self.storage.mark_title_seen("Borderlands 3 бесплатно", "post_1", "VGTimes")
-
-        seen, orig_id, _ = await self.storage.is_title_seen("Borderlands 3 стала бесплатной")
-        self.assertTrue(seen)
-        self.assertEqual(orig_id, "post_1")
-
-    async def test_fuzzy_different_games_not_duplicate(self):
-        """'Game A бесплатно' и 'Game B бесплатно' — не дубли."""
-        await self.storage.mark_title_seen("Game A бесплатно", "post_1", "Pikabu")
-
-        seen, _, _ = await self.storage.is_title_seen("Game B бесплатно")
-        self.assertFalse(seen)
-
-    async def test_normalize_title(self):
-        """_normalize_title убирает шум и приводит к нижнему регистру."""
-        result = SQLiteStorage._normalize_title("Игра X бесплатно!")
-        self.assertNotIn("бесплатно", result)
-        self.assertIn("игра", result)
-        self.assertIn("x", result)
-
-    async def test_normalize_strips_free_word(self):
-        """'Game free' и 'Game' нормализуются одинаково."""
-        self.assertEqual(
-            SQLiteStorage._normalize_title("Super Game free"),
-            SQLiteStorage._normalize_title("Super Game"),
-        )
 
 
 class TestCleanupOldPosts(unittest.IsolatedAsyncioTestCase):

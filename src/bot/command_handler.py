@@ -85,12 +85,12 @@ class CommandHandler:
             return
 
         try:
-            failed = await self.storage.get_failed_posts(max_retries=3)
+            failed = await self.storage.get_failed_estates(max_retries=3)
             if not failed:
                 await update.message.reply_text("DLQ пуста — нет постов для повтора.")
                 return
             await update.message.reply_text(f"⏳ Повторная попытка для {len(failed)} постов…")
-            await self.monitor._retry_failed_posts()
+            await self.monitor._retry_failed_estates()
             await update.message.reply_text("✅ Повтор завершён.")
         except Exception as e:
             logger.error("[CommandHandler] /retry failed: %s", e, exc_info=True)

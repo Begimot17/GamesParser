@@ -78,7 +78,7 @@ class TestRealTelegramSend:
         bot = make_bot()
         post = make_post(source="Pikabu")
         result = asyncio.run(send_post(bot, post))
-        assert result is True, "Сообщение не отправлено"
+        assert result, "Сообщение не отправлено"
 
     def test_send_text_post_vgtimes(self):
         """Отправляет форматированный пост VGTimes в тестовый канал."""
@@ -94,7 +94,7 @@ class TestRealTelegramSend:
             tags=[],
         )
         result = asyncio.run(send_post(bot, post))
-        assert result is True, "Сообщение не отправлено"
+        assert result, "Сообщение не отправлено"
 
     def test_send_text_post_stopgame(self):
         """Отправляет форматированный пост StopGame в тестовый канал."""
@@ -106,7 +106,7 @@ class TestRealTelegramSend:
             tags=["обзор", "новинки"],
         )
         result = asyncio.run(send_post(bot, post))
-        assert result is True, "Сообщение не отправлено"
+        assert result, "Сообщение не отправлено"
 
     def test_send_post_with_image(self):
         """Отправляет пост с изображением в тестовый канал."""
@@ -119,7 +119,7 @@ class TestRealTelegramSend:
             images=["https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Camponotus_flavomarginatus_ant.jpg/640px-Camponotus_flavomarginatus_ant.jpg"],
         )
         result = asyncio.run(send_post(bot, post))
-        assert result is True, "Сообщение с изображением не отправлено"
+        assert result, "Сообщение с изображением не отправлено"
 
     def test_send_post_with_store_links(self):
         """Отправляет пост со ссылками на магазины."""
@@ -135,4 +135,4 @@ class TestRealTelegramSend:
             tags=["witcher", "RPG"],
         )
         result = asyncio.run(send_post(bot, post))
-        assert result is True, "Сообщение со ссылками не отправлено"
+        assert result, "Сообщение со ссылками не отправлено"

@@ -5,6 +5,7 @@ Public API — no auth required.
 """
 
 import asyncio
+import re
 from typing import Optional
 
 import aiohttp
@@ -90,20 +91,26 @@ class GamerPowerService:
         platform = _resolve_platform(platforms_raw)
 
         worth: str = item.get("worth", "") or ""
-        if worth and worth not in ("N/A", "$0.00", ""):
-            if description:
-                description = f"{description} | Вартість: {worth}"
-            else:
-                description = f"Вартість: {worth}"
+        if worth in ("N/A", "$0.00"):
+            worth = ""
 
         return {
             "id": gid,
-            "name": name,
+            "name": _clean_title(name),
             "url": url,
             "image_url": image_url,
             "description": description,
             "platform": platform,
+            "platforms": platforms_raw,
+            "worth": worth or None,
         }
+
+
+def _clean_title(title: str) -> str:
+    """'Breathedge (Epic Games) Giveaway' → 'Breathedge'; '(Mobile)' is kept in `platforms` instead."""
+    cleaned = re.sub(r"\s*\([^)]*\)\s*(?=Giveaway\s*$)", " ", title)
+    cleaned = re.sub(r"\s+(?:Key\s+)?Giveaway\s*$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip() or title
 
 
 def _resolve_platform(platforms_raw: str) -> str:

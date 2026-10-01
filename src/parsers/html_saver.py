@@ -23,6 +23,6 @@ class HTMLSaver:
             filepath = Path(settings.HTML_DIR) / filename
             async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
                 await f.write(html_content)
-            logger.info(f"Saved HTML for post {post_id} to {filepath}")
+            logger.info("Saved HTML for post %s to %s", post_id, filepath)
         except Exception as e:
-            logger.error(f"Error saving HTML for post {post_id}: {e}")
+            logger.error("Error saving HTML for post %s: %s", post_id, e)

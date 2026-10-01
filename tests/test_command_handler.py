@@ -114,7 +114,7 @@ class TestCommandHandlerRetry(unittest.IsolatedAsyncioTestCase):
 
         self.monitor._retry_failed_posts.assert_not_called()
         text = update.message.reply_text.call_args[0][0]
-        assert "порожня" in text or "empty" in text.lower()
+        assert "пуста" in text or "empty" in text.lower()
 
 
 if __name__ == "__main__":

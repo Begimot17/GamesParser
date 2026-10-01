@@ -84,7 +84,9 @@ class VGTimesParser(BaseParser):
                 if domain and domain in href:
                     cleaned = self._clean_store_url(href, store_name)
                     if cleaned:
-                        stores[store_name] = cleaned
+                        urls = stores.setdefault(store_name, [])
+                        if cleaned not in urls:
+                            urls.append(cleaned)
                         break
         return stores
 
@@ -164,14 +166,21 @@ class VGTimesParser(BaseParser):
             full_html = await self._fetch_page(link)
             soup = BeautifulSoup(full_html, "html.parser")
 
-            content_elem = soup.select_one(self.SELECTORS["content"])
-            content = content_elem.get_text(" ", strip=True) if content_elem else ""
+            # The article body is split into several text blocks; take all of them from the main article only
+            article_root = soup.select_one("div.news_item_content.fullarticle") or soup
+            content_elems = article_root.select(self.SELECTORS["content"])
+            content = " ".join(e.get_text(" ", strip=True) for e in content_elems)
 
             date_elem = soup.select_one(self.SELECTORS["date"])
             raw_date = date_elem.get_text(strip=True) if date_elem else ""
             date = self._parse_date(raw_date) if raw_date else None
 
+            # Store links live in the article body; the list card rarely has them
             store_links = self._extract_store_links(article_html)
+            for block in content_elems:
+                for store, urls in self._extract_store_links(block).items():
+                    known = store_links.setdefault(store, [])
+                    known.extend(u for u in urls if u not in known)
             content = self._clean_text(content)
 
             if len(content) < 50:

@@ -130,7 +130,8 @@ class TestParserManager(unittest.IsolatedAsyncioTestCase):
             try:
                 streamed_posts = []
                 async for post in self.manager.stream_posts():
-                    streamed_posts.append(post)
+                    if post is not None:  # skip cycle sentinel
+                        streamed_posts.append(post)
             except InterruptedError:
                 pass
 
@@ -152,8 +153,12 @@ class TestParserManager(unittest.IsolatedAsyncioTestCase):
             yield old_post
 
         self.mock_pikabu.stream_posts.side_effect = parser_stream
-        self.mock_vgtimes.stream_posts.side_effect = lambda: (_ for _ in ())
-        self.mock_stopgame.stream_posts.side_effect = lambda: (_ for _ in ())
+        async def empty_stream():
+            return
+            yield  # make it an async generator
+
+        self.mock_vgtimes.stream_posts.side_effect = empty_stream
+        self.mock_stopgame.stream_posts.side_effect = empty_stream
 
         async def is_processed_side_effect(post_id):
             return post_id == "old_post"
@@ -164,7 +169,8 @@ class TestParserManager(unittest.IsolatedAsyncioTestCase):
             try:
                 streamed_posts = []
                 async for post in self.manager.stream_posts():
-                    streamed_posts.append(post)
+                    if post is not None:  # skip cycle sentinel
+                        streamed_posts.append(post)
             except InterruptedError:
                 pass
 

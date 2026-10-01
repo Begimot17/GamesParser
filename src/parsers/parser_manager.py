@@ -33,7 +33,7 @@ class ParserManager:
                     )
                     return posts
             except asyncio.TimeoutError:
-                logger.error(f"[ParserManager] Timeout fetching from {type(parser).__name__}")
+                logger.error("[ParserManager] Timeout fetching from %s", type(parser).__name__)
                 return []
             except Exception as e:
                 logger.error(
@@ -52,7 +52,7 @@ class ParserManager:
                     filtered.append(post)
             all_posts = filtered
 
-        logger.info(f"[ParserManager] Total posts fetched: {len(all_posts)}")
+        logger.info("[ParserManager] Total posts fetched: %s", len(all_posts))
         return all_posts
 
     async def _get_is_first_run(self) -> bool:

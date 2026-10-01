@@ -205,7 +205,7 @@ class TestFormatPriceAlert:
         )
         assert "₴2\u00a0499" in msg  # 249900 kopecks = ₴2 499
         assert "$" not in msg
-        assert "безкоштовною" in msg
+        assert "Бесплатно" in msg
 
     def test_fmt_uah_big_discount(self, formatter):
         msg = formatter.format_price_alert(
@@ -260,7 +260,7 @@ class TestFormatPriceAlert:
             discount_pct=0,
             alert_type="big_discount",
         )
-        assert "Безкоштовно" in msg
+        assert "Бесплатно" in msg
 
     def test_cross_store_uses_uah_keys(self, formatter):
         cross = {
@@ -281,5 +281,5 @@ class TestFormatPriceAlert:
             store="egs",
             cross_store_data=cross,
         )
-        assert "Також у Steam" in msg
+        assert "Также в Steam" in msg
         assert "₴" in msg

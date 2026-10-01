@@ -115,7 +115,7 @@ def test_became_free_format():
         alert_type="became_free",
         game_info=None,
     )
-    assert "безкоштовною" in msg
+    assert "Бесплатно" in msg
     assert "₴49" in msg  # UAH price (4999 kopecks = ₴49)
     assert "#free" in msg
     assert "#steam" in msg
@@ -135,9 +135,9 @@ def test_big_discount_format():
         alert_type="big_discount",
         game_info=None,
     )
-    assert "знижка" in msg.lower()
+    assert "скидка" in msg.lower()
     assert "90%" in msg
-    assert "#знижка" in msg
+    assert "#скидка" in msg
     assert "#steam" in msg
     assert "Test Game" in msg
     assert "₴" in msg  # UAH symbol

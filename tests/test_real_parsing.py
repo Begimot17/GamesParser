@@ -61,7 +61,7 @@ class TestRealParsing:
                 token=settings.TELEGRAM_BOT_TOKEN,
                 channel_id=settings.TEST_CHANNEL_ID,
             )
-            parser = PikabuParser(storage=storage)
+            parser = PikabuParser()
             try:
                 print(f"\nПарсим Pikabu -> {settings.TEST_CHANNEL_ID}")
                 sent = await run_parser_and_send(parser, bot, storage, MAX_POSTS_PER_PARSER)
@@ -84,7 +84,7 @@ class TestRealParsing:
                 token=settings.TELEGRAM_BOT_TOKEN,
                 channel_id=settings.TEST_CHANNEL_ID,
             )
-            parser = VGTimesParser(storage=storage)
+            parser = VGTimesParser()
             try:
                 print(f"\nПарсим VGTimes -> {settings.TEST_CHANNEL_ID}")
                 sent = await run_parser_and_send(parser, bot, storage, MAX_POSTS_PER_PARSER)

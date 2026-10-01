@@ -43,19 +43,19 @@ class CommandHandler:
             stats = await self.storage.get_posts_stats()
             lines = [
                 "<b>📊 Статистика GamesParser</b>",
-                f"Всього постів: <b>{stats.get('total', 0)}</b>",
-                f"Відправлено: <b>{stats.get('sent', 0)}</b>",
-                f"Безкоштовних: <b>{stats.get('is_free', 0)}</b>",
+                f"Всего постов: <b>{stats.get('total', 0)}</b>",
+                f"Отправлено: <b>{stats.get('sent', 0)}</b>",
+                f"Бесплатных: <b>{stats.get('is_free', 0)}</b>",
             ]
             by_source = stats.get("by_source", {})
             if by_source:
-                lines.append("\nЗа джерелами:")
+                lines.append("\nПо источникам:")
                 for src, cnt in by_source.items():
                     lines.append(f"  • {html.escape(src)}: {cnt}")
             await update.message.reply_text("\n".join(lines), parse_mode="HTML")
         except Exception as e:
             logger.error("[CommandHandler] /stats failed: %s", e, exc_info=True)
-            await update.message.reply_text("Помилка при отриманні статистики.")
+            await update.message.reply_text("Ошибка при получении статистики.")
 
     async def cmd_recent(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
         """Reply with the 5 most recently sent posts."""
@@ -65,9 +65,9 @@ class CommandHandler:
         try:
             posts = await self.storage.get_recent_posts(limit=5)
             if not posts:
-                await update.message.reply_text("Ще немає відправлених постів.")
+                await update.message.reply_text("Отправленных постов пока нет.")
                 return
-            lines = ["<b>🕐 Останні пости</b>"]
+            lines = ["<b>🕐 Последние посты</b>"]
             for p in posts:
                 title = html.escape(p.get("title") or "—")
                 link = html.escape(p.get("link") or "")
@@ -77,7 +77,7 @@ class CommandHandler:
             await update.message.reply_text("\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)
         except Exception as e:
             logger.error("[CommandHandler] /recent failed: %s", e, exc_info=True)
-            await update.message.reply_text("Помилка при отриманні останніх постів.")
+            await update.message.reply_text("Ошибка при получении последних постов.")
 
     async def cmd_retry(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
         """Trigger DLQ retry immediately."""
@@ -87,11 +87,11 @@ class CommandHandler:
         try:
             failed = await self.storage.get_failed_posts(max_retries=3)
             if not failed:
-                await update.message.reply_text("DLQ порожня — немає постів для повтору.")
+                await update.message.reply_text("DLQ пуста — нет постов для повтора.")
                 return
-            await update.message.reply_text(f"⏳ Повторна спроба для {len(failed)} постів…")
+            await update.message.reply_text(f"⏳ Повторная попытка для {len(failed)} постов…")
             await self.monitor._retry_failed_posts()
-            await update.message.reply_text("✅ Retry завершено.")
+            await update.message.reply_text("✅ Повтор завершён.")
         except Exception as e:
             logger.error("[CommandHandler] /retry failed: %s", e, exc_info=True)
-            await update.message.reply_text("Помилка при повторній спробі.")
+            await update.message.reply_text("Ошибка при повторной попытке.")

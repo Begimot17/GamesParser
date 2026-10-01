@@ -65,7 +65,7 @@ class RetryHandler:
                     "Retry %d/%d after error: %s. Waiting %.2f seconds...",
                     attempt + 1,
                     self.max_retries,
-                    e,
+                    repr(e),
                     delay,
                 )
                 await asyncio.sleep(delay)

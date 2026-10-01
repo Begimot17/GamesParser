@@ -104,7 +104,7 @@ def test_became_free_egs_format():
         game_info=None,
         store="egs",
     )
-    assert "безкоштовною" in msg
+    assert "бесплатной" in msg
     assert "Epic Games Store" in msg
     assert "#free" in msg
     assert "#epic" in msg
@@ -125,9 +125,9 @@ def test_big_discount_egs_format():
         game_info=None,
         store="egs",
     )
-    assert "знижка" in msg.lower()
+    assert "скидка" in msg.lower()
     assert "90%" in msg
-    assert "#знижка" in msg
+    assert "#скидка" in msg
     assert "#epic" in msg
 
 
@@ -175,7 +175,7 @@ def test_cross_store_block_included():
         store="egs",
         cross_store_data=cross_store_data,
     )
-    assert "Також у Steam" in msg
+    assert "Также в Steam" in msg
     assert "store.steampowered.com" in msg
     assert "━━━━━━━━━━" in msg
 
@@ -203,7 +203,7 @@ def test_cross_store_block_egs_in_steam_message():
         store="steam",
         cross_store_data=cross_store_data,
     )
-    assert "Також в Epic Games Store" in msg
+    assert "Также в Epic Games Store" in msg
     assert "epicgames.com" in msg
 
 
@@ -335,7 +335,7 @@ def test_cross_store_data_included_when_steam_recent():
     assert result is True
     assert sent_messages
     msg = sent_messages[0]
-    assert "Також у Steam" in msg
+    assert "Также в Steam" in msg
     assert "store.steampowered.com" in msg
 
 

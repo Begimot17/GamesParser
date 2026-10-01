@@ -80,9 +80,9 @@ class TestVGTimesParser(unittest.IsolatedAsyncioTestCase):
         self.parser._clean_store_url = MagicMock(side_effect=lambda url, name: url)
 
         expected_links = {
-            "steam": "https://store.steampowered.com/app/12345/",
-            "epicgames": "https://www.epicgames.com/p/game-name",
-            "gog": "https://www.gog.com/game/another_game",
+            "steam": ["https://store.steampowered.com/app/12345/"],
+            "epicgames": ["https://www.epicgames.com/p/game-name"],
+            "gog": ["https://www.gog.com/game/another_game"],
         }
         self.assertDictEqual(self.parser._extract_store_links(article_html), expected_links)
 

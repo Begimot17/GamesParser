@@ -3,9 +3,10 @@ import json
 import logging
 import re
 import sys
+import uuid
 from datetime import date, datetime
 
-from src.bot.bot import TelegramNewsBot
+from src.bot.bot import SentMessage, TelegramNewsBot
 from src.common.logger import setup_logger, logger, audit_logger, missing_data_logger
 from src.common.metrics import CycleMetrics
 from src.config.config import settings
@@ -22,6 +23,7 @@ from src.parsers.parser_manager import ParserManager
 from src.parsers.pikabu_parser import PikabuParser
 from src.parsers.stopgame_parser import StopGameParser
 from src.parsers.vgtimes_parser import VGTimesParser
+from src.storage import game_keys
 from src.storage.sqlite_storage import SQLiteStorage
 from typing import Optional
 
@@ -131,54 +133,105 @@ class NewsMonitor:
         }, ensure_ascii=False))
 
     async def _add_post_to_estate(self, post: Post) -> None:
-        """Accumulate a post into its estate (grouped by normalized title)."""
-        estate_id = SQLiteStorage._title_hash(SQLiteStorage._normalize_title(post.title))
-        logger.info("[Estate] Accumulating post %s (%s) → estate %s", post.id, post.source, estate_id[:8])
-        await self.storage.upsert_estate(estate_id, post.title, post)
+        """Accumulate a post into the estate of its game event.
+
+        Posts from different sources about the same game (same store link, same game name, or a game
+        name found in the other headline) land in one estate. If that estate was already sent,
+        the sent message gets edited on the next flush instead of a duplicate being posted.
+        """
+        meta = post.metadata
+        games = game_keys.games_from_links(meta.store_links or {}, meta.game_info or {}) if meta else []
+        game_keys.apply_title_names(games, post.title)
+        is_free = (
+            SQLiteStorage._is_free_from_game_info((meta.game_info or {}) if meta else {})
+            or game_keys.looks_like_giveaway(post.title)
+        )
+        kind = game_keys.event_kind(is_free, post.title)
+        keys = game_keys.estate_keys(post.title, games)
+
+        estate_id = await self.storage.find_matching_estate(keys, post.title, kind)
+        if estate_id:
+            logger.info("[Estate] Post %s (%s) joins existing estate %s", post.id, post.source, estate_id[:8])
+        else:
+            estate_id = uuid.uuid4().hex
+            logger.info("[Estate] Post %s (%s) opens new estate %s", post.id, post.source, estate_id[:8])
+
+        already_sent = await self.storage.upsert_estate(
+            estate_id,
+            post.title,
+            kind=kind,
+            is_free=is_free,
+            description=post.content or "",
+            source=post.source,
+            images=self._safe_images(post),
+            tags=(meta.tags or []) if meta else [],
+            games=games,
+            keys=keys,
+        )
         await self.storage.add_post_to_estate(estate_id, post)
         await self.storage.save_post(post, sent=False)
         await self.storage.mark_title_seen(post.title, post.id, post.source)
         await self.storage.mark_as_processed(post.id)
+        if already_sent:
+            logger.info("[Estate] Estate %s was already sent — its message will be updated", estate_id[:8])
 
     async def _enrich_with_steam(self, estate: dict):
-        """Fetch Steam GameInfo for an estate if it has a Steam store link."""
-        if estate.get("store_name") != "steam":
+        """Fetch fresh Steam GameInfo for a single-game estate with a Steam link."""
+        games = estate.get("games") or []
+        if len(games) != 1:
             return None
-        url = estate.get("store_url", "")
+        url = games[0].get("links", {}).get("steam", "")
         if not re.search(r"/app/\d+", url):
             return None
         try:
-            return await self._price_service.get_steam_info(url, lang="english")
+            return await self._price_service.get_steam_info(url, lang="russian")
         except Exception as e:
             logger.warning("[Estate] Steam enrichment failed for %s: %s", url, e)
             return None
 
+    async def _render_estate(self, estate: dict) -> tuple[str, list[str]]:
+        """Return (caption, images) for an estate."""
+        game_info = await self._enrich_with_steam(estate)
+        text = self.bot.formatter.format_estate_alert(estate, game_info=game_info)
+        images: list[str] = [i for i in estate.get("images", []) if isinstance(i, str) and i.startswith("https://")]
+        if game_info and getattr(game_info, "header_image", None):
+            images = [game_info.header_image] + images
+        return text, images[:1]
+
+    async def _send_estate(self, estate: dict) -> Optional[SentMessage]:
+        """Format and send one estate alert. Returns the sent message reference or None."""
+        text, images = await self._render_estate(estate)
+        return await self.bot.send_message(text, images=images or None)
+
+    async def _update_sent_estate(self, estate: dict) -> None:
+        """A late post joined an already sent estate: edit that message to include it."""
+        estate_id = estate["estate_id"]
+        if estate.get("message_id"):
+            text, _ = await self._render_estate(estate)
+            ref = SentMessage(estate["message_id"], is_caption=estate.get("message_is_caption", False))
+            if await self.bot.edit_message(ref, text):
+                logger.info("[Estate] Updated sent estate %s with new sources", estate_id[:8])
+        else:
+            logger.info("[Estate] Estate %s was sent before message tracking — duplicate suppressed", estate_id[:8])
+        await self.storage.clear_estate_edit(estate_id)
+        await self.storage.mark_posts_sent(estate_id)
+
     async def _flush_pending_estates(self) -> None:
-        """Send one Telegram alert per pending estate, then mark them flushed."""
+        """Send one Telegram alert per pending estate, then mark them flushed.
+        Sent estates that received late posts get their message edited."""
         estates = await self.storage.get_pending_estates()
-        if not estates:
-            return
-        logger.info("[Estate] Flushing %d estate(s)...", len(estates))
+        if estates:
+            logger.info("[Estate] Flushing %d estate(s)...", len(estates))
         for estate in estates:
             try:
-                game_info = await self._enrich_with_steam(estate)
-                text = self.bot.formatter.format_estate_alert(
-                    title=estate["title"],
-                    store_url=estate["store_url"],
-                    store_name=estate["store_name"],
-                    is_free=estate["is_free"],
-                    description=estate["description"],
-                    posts=estate["posts"],
-                    tags=estate["tags"],
-                    game_info=game_info,
+                ref = await self._send_estate(estate)
+                await self.storage.mark_estate_flushed(
+                    estate["estate_id"],
+                    sent=bool(ref),
+                    message_id=getattr(ref, "message_id", None),
+                    is_caption=getattr(ref, "is_caption", False),
                 )
-                images: list[str] = [i for i in estate["images"] if isinstance(i, str) and i.startswith("https://")]
-                if game_info and getattr(game_info, "header_image", None):
-                    images = [game_info.header_image] + images
-
-                success = await self.bot.send_message(text, images=images[:1] or None)
-                await self.storage.mark_estate_flushed(estate["estate_id"], sent=success)
-                if success:
+                if ref:
                     await self.storage.mark_posts_sent(estate["estate_id"])
                     logger.info("[Estate] Sent estate %s: %s", estate["estate_id"][:8], estate["title"])
                 else:
@@ -186,17 +239,24 @@ class NewsMonitor:
                     await self.storage.save_failed_estate(
                         estate["estate_id"],
                         json.dumps(estate, default=str),
-                        "send_message returned False",
+                        "send_message returned no message",
                     )
             except Exception as e:
                 logger.error("[Estate] Error flushing estate %s: %s", estate["estate_id"][:8], e, exc_info=True)
                 try:
+                    await self.storage.mark_estate_flushed(estate["estate_id"], sent=False)
                     await self.storage.save_failed_estate(
                         estate["estate_id"], json.dumps(estate, default=str), str(e)
                     )
                 except Exception:
                     pass
             await asyncio.sleep(self.settings.STREAM_POST_PROCESSING_DELAY)
+
+        for estate in await self.storage.get_estates_to_edit():
+            try:
+                await self._update_sent_estate(estate)
+            except Exception as e:
+                logger.error("[Estate] Error updating estate %s: %s", estate["estate_id"][:8], e, exc_info=True)
 
     async def _retry_failed_estates(self) -> None:
         """Attempt to resend estates from the Dead Letter Queue."""
@@ -207,25 +267,13 @@ class NewsMonitor:
         for entry in failed:
             estate_id = entry["estate_id"]
             try:
-                estate = json.loads(entry["estate_json"])
-                game_info = await self._enrich_with_steam(estate)
-                text = self.bot.formatter.format_estate_alert(
-                    title=estate.get("title", ""),
-                    store_url=estate.get("store_url"),
-                    store_name=estate.get("store_name"),
-                    is_free=estate.get("is_free", False),
-                    description=estate.get("description", ""),
-                    posts=estate.get("posts", []),
-                    tags=estate.get("tags", []),
-                    game_info=game_info,
-                )
-                images = [i for i in estate.get("images", []) if isinstance(i, str) and i.startswith("https://")]
-                if game_info and getattr(game_info, "header_image", None):
-                    images = [game_info.header_image] + images
-
-                success = await self.bot.send_message(text, images=images[:1] or None)
-                if success:
-                    await self.storage.mark_estate_flushed(estate_id, sent=True)
+                # Prefer the current DB state: posts may have joined the estate since it failed
+                estate = await self.storage.get_estate(estate_id) or json.loads(entry["estate_json"])
+                ref = await self._send_estate(estate)
+                if ref:
+                    await self.storage.mark_estate_flushed(
+                        estate_id, sent=True, message_id=ref.message_id, is_caption=ref.is_caption,
+                    )
                     await self.storage.mark_posts_sent(estate_id)
                     await self.storage.delete_failed_estate(estate_id)
                     logger.info("[Estate DLQ] Retry succeeded for estate %s", estate_id[:8])
@@ -305,7 +353,7 @@ class NewsMonitor:
                     if await self.storage.is_processed(post.id):
                         continue
 
-                    logger.info(f"New post found: {post.title}")
+                    logger.info("New post found: %s", post.title)
                     success = await self.bot.send_message(
                         self.bot.formatter.format_message(post),
                         images=self._safe_images(post)
@@ -316,11 +364,11 @@ class NewsMonitor:
 
                     await asyncio.sleep(self.settings.POST_PROCESSING_DELAY)
 
-                logger.info(f"Sleeping for {self.settings.CHECK_INTERVAL} seconds...")
+                logger.info("Sleeping for %s seconds...", self.settings.CHECK_INTERVAL)
                 await asyncio.sleep(self.settings.CHECK_INTERVAL)
 
             except Exception as e:
-                logger.error(f"Error in polling loop: {e}", exc_info=True)
+                logger.error("Error in polling loop: %s", e, exc_info=True)
                 await asyncio.sleep(self.settings.CHECK_INTERVAL)
 
 
@@ -330,10 +378,10 @@ def main() -> None:
         monitor = NewsMonitor()
         asyncio.run(monitor.run(use_streaming=True))
     except ValueError as e:
-        logger.error(f"Configuration error: {e}")
+        logger.error("Configuration error: %s", e)
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=True)
+        logger.error("Fatal error: %s", e, exc_info=True)
         sys.exit(1)
 
 

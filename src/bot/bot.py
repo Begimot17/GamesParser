@@ -1,11 +1,13 @@
 """Telegram bot logic for GamesParser project."""
 
 import asyncio
-from typing import Optional, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import Any, Optional, TYPE_CHECKING
 
 import httpx
 from telegram import Bot, InputMediaPhoto, request
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import Application
 from telegram.ext import CommandHandler as TelegramCommandHandler
 
@@ -17,11 +19,34 @@ if TYPE_CHECKING:
     from src.bot.command_handler import CommandHandler
 
 
+CAPTION_LIMIT = 1024
+TEXT_LIMIT = 4096
+_IMAGE_CHECK_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/124.0 Safari/537.36",
+}
+
+
+@dataclass(frozen=True)
+class SentMessage:
+    """Reference to a sent channel message (truthy), used to edit it later."""
+
+    message_id: int
+    is_caption: bool
+
+
+def _first_message(result: Any) -> Optional[Any]:
+    """send_message returns a Message, send_media_group a tuple of Messages."""
+    if isinstance(result, (list, tuple)):
+        return result[0] if result else None
+    return result
+
+
 class TelegramNewsBot:
     """Telegram bot for posting news updates."""
 
     def __init__(self, token: str, channel_id: str, config: Optional[dict] = None):
-        logger.info(f"[TelegramNewsBot] Initializing bot for channel {channel_id}")
+        logger.info("[TelegramNewsBot] Initializing bot for channel %s", channel_id)
         if not token or not channel_id:
             raise ValueError("Token and channel_id must be provided.")
 
@@ -108,38 +133,65 @@ class TelegramNewsBot:
             await self.http_client.aclose()
         logger.info("[TelegramNewsBot] Bot session closed.")
 
-    async def send_message(self, text: str, images: Optional[list[str]] = None) -> bool:
-        """Sends a message to the channel, choosing the appropriate method."""
+    async def send_message(self, text: str, images: Optional[list[str]] = None) -> Optional[SentMessage]:
+        """Sends a message to the channel, choosing the appropriate method.
+
+        Returns a (truthy) SentMessage reference on success, None on failure.
+        """
         if images:
-            success = await self._send_media_group_message(text, images)
-        else:
-            success = await self._send_text_message(text)
-        return success
+            return await self._send_media_group_message(text, images)
+        return await self._send_text_message(text)
 
-    async def _send_text_message(self, text: str) -> bool:
-        message_content = text
+    async def edit_message(self, ref: SentMessage, text: str) -> bool:
+        """Replace the text (or the photo caption) of an already sent message."""
+        try:
+            if ref.is_caption:
+                caption, parse_mode = self._fit_html(text, CAPTION_LIMIT)
+                await self.bot.edit_message_caption(
+                    chat_id=self.channel_id, message_id=ref.message_id, caption=caption, parse_mode=parse_mode,
+                )
+            else:
+                body, parse_mode = self._fit_html(text, TEXT_LIMIT)
+                await self.bot.edit_message_text(
+                    chat_id=self.channel_id, message_id=ref.message_id, text=body, parse_mode=parse_mode,
+                    disable_web_page_preview=True,
+                )
+            logger.info("[TelegramNewsBot] Edited message %s", ref.message_id)
+            return True
+        except BadRequest as e:
+            if "not modified" in str(e).lower():
+                return True
+            logger.warning("[TelegramNewsBot] Cannot edit message %s: %s", ref.message_id, e)
+            return False
+        except Exception as e:
+            logger.warning("[TelegramNewsBot] Cannot edit message %s: %r", ref.message_id, e)
+            return False
 
-        if len(message_content) > 4096:
-            logger.warning(
-                f"[TelegramNewsBot] Text message too long ({len(message_content)}), converting to plain text",
-            )
-            message_content = self.formatter.to_plain_text(message_content)[:4096]
-            # parse_mode logic removed as we fallback to simple text, but assuming HTML is preferred unless forced plain
-            # Actually, to_plain_text implies we strip html.
+    def _fit_html(self, text: str, limit: int) -> tuple[str, Optional[str]]:
+        """Telegram limits count visible characters, not HTML markup.
 
-        logger.info(
-            f"[TelegramNewsBot] Sending text message (first 500 chars): {message_content[:500]}",
-        )
-        # Use retry handler configured in init
+        Keeps HTML when the visible text fits; otherwise falls back to trimmed plain text.
+        """
+        plain = self.formatter.to_plain_text(text)
+        if len(plain) <= limit:
+            return text, ParseMode.HTML if "<" in text else None
+        logger.warning("[TelegramNewsBot] Message too long (%d visible chars), sending as plain text", len(plain))
+        return plain[: limit - 1] + "…", None
+
+    async def _send_text_message(self, text: str) -> Optional[SentMessage]:
+        message_content, parse_mode = self._fit_html(text, TEXT_LIMIT)
+        logger.info("[TelegramNewsBot] Sending text message (first 500 chars): %s", message_content[:500])
         result = await self.retry_handler.run_with_retry(
             self.bot.send_message,
             chat_id=self.channel_id,
             text=message_content,
-            parse_mode=ParseMode.HTML if "<" in message_content else None,
+            parse_mode=parse_mode,
+            disable_web_page_preview=True,
         )
-        return bool(result)
+        message = _first_message(result)
+        return SentMessage(message.message_id, is_caption=False) if message else None
 
-    async def _send_media_group_message(self, text: str, images: list[str]) -> bool:
+    async def _send_media_group_message(self, text: str, images: list[str]) -> Optional[SentMessage]:
         """Sends a media group with caption."""
         media_group = await self._prepare_media_group(text, images)
         if not media_group:
@@ -147,38 +199,25 @@ class TelegramNewsBot:
             return await self._send_text_message(text)
 
         if len(media_group) > 10:
-             return await self._send_large_media_group(media_group)
+            return await self._send_large_media_group(media_group)
 
         logger.info(
-            f"[TelegramNewsBot] Sending media group with caption: {media_group[0].caption[:500] if media_group[0].caption else 'No caption'}",
+            "[TelegramNewsBot] Sending media group with caption: %s",
+            media_group[0].caption[:500] if media_group[0].caption else "No caption",
         )
-
         result = await self.retry_handler.run_with_retry(
             self.bot.send_media_group,
             chat_id=self.channel_id,
             media=media_group,
         )
-        return bool(result)
+        message = _first_message(result)
+        return SentMessage(message.message_id, is_caption=True) if message else None
 
     async def _prepare_media_group(
         self, text: str, images: list[str],
     ) -> list[InputMediaPhoto]:
         media_group = []
-        caption_html = text
-        caption_plain = self.formatter.to_plain_text(caption_html)
-        caption_to_send = caption_html
-        parse_mode = ParseMode.HTML
-
-        if len(caption_html) > 1024:
-            logger.warning(
-                f"[TelegramNewsBot] Media caption too long ({len(caption_html)}), converting to plain text",
-            )
-            caption_to_send = (
-                caption_plain[:1021] + "..."
-                if len(caption_plain) > 1024
-                else caption_plain
-            )
-            parse_mode = None
+        caption_to_send, parse_mode = self._fit_html(text, CAPTION_LIMIT)
 
         valid_images_count = 0
         for i, image_url in enumerate(images):
@@ -190,7 +229,7 @@ class TelegramNewsBot:
                 self.config["validate_images"]
                 and not await self._validate_image_url(clean_url)
             ):
-                logger.warning(f"Skipping invalid or unavailable image URL: {image_url}")
+                logger.warning("Skipping invalid or unavailable image URL: %s", image_url)
                 continue
 
             media_group.append(
@@ -204,32 +243,27 @@ class TelegramNewsBot:
 
         return media_group
 
-    async def _send_large_media_group(self, media_group: list[InputMediaPhoto]) -> bool:
-        logger.info(f"Splitting large media group ({len(media_group)} items)")
+    async def _send_large_media_group(self, media_group: list[InputMediaPhoto]) -> Optional[SentMessage]:
+        """Send more than 10 photos as several albums; the caption sits on the first photo of the first album."""
+        logger.info("Splitting large media group (%s items)", len(media_group))
         max_media_per_group = 10
-        success = True
+        first: Optional[SentMessage] = None
 
         for i in range(0, len(media_group), max_media_per_group):
             group_slice = media_group[i : i + max_media_per_group]
-
-            # Helper logic: only first item of first group has caption?
-            # Or if logical split (e.g. 20 images = 2 posts), maybe repeat caption or add numbering?
-            # Current implementation logic: only first item of FIRST group has caption (already set in _prepare).
-            # But subsequent groups shouldn't have caption set on their first item if it was meant for the whole post,
-            # OR they should just be images without caption.
-            # _prepare_media_group sets caption on item 0.
-            # If item 0 is in first slice, subsequent slices won't have caption.
-
-            logger.info(f"Sending slice {i//max_media_per_group + 1} with {len(group_slice)} items")
+            logger.info("Sending slice %s with %s items", i//max_media_per_group + 1, len(group_slice))
             result = await self.retry_handler.run_with_retry(
                 self.bot.send_media_group,
                 chat_id=self.channel_id,
                 media=group_slice,
             )
-            if not result:
-                success = False
+            message = _first_message(result)
+            if not message:
+                return None
+            if first is None:
+                first = SentMessage(message.message_id, is_caption=True)
 
-        return success
+        return first
 
     @retry(max_retries=3, base_delay=1, backoff_factor=1.5)
     async def _validate_image_url(self, url: str) -> bool:
@@ -238,9 +272,15 @@ class TelegramNewsBot:
             if not self.http_client or self.http_client.is_closed:
                 self.http_client = self._init_http_client()
 
-            response = await self.http_client.head(url)
+            response = await self.http_client.head(url, headers=_IMAGE_CHECK_HEADERS, follow_redirects=True)
+            if response.status_code in (403, 405):
+                # Some CDNs reject HEAD requests — confirm with a real GET
+                async with self.http_client.stream(
+                    "GET", url, headers=_IMAGE_CHECK_HEADERS, follow_redirects=True,
+                ) as streamed:
+                    return streamed.status_code == 200
             return response.status_code == 200
         except Exception as e:
-            logger.warning(f"Error validating image URL {url}: {e}")
+            logger.warning("Error validating image URL %s: %s", url, e)
             return False
 

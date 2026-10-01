@@ -9,12 +9,15 @@ from typing import Optional
 import aiosqlite
 
 from src.common.logger import logger
+from src.storage import game_keys
 from src.storage.base import Storage
 
 # Words to strip when normalising titles for fuzzy deduplication
 _NOISE_WORDS = re.compile(
     r"\b(бесплатн\w*|free|раздача|стала|тепер|now|"
-    r"навсегда|forever|тимчасово|temporarily|неделю)\b",
+    r"навсегда|forever|тимчасово|temporarily|неделю|"
+    r"giveaways?|"                            # "Havendock (Epic Games) Giveaway" → "Havendock"
+    r"epic\s+games?\s+store|epic\s+games?)\b",  # "[Epic Games Store]" prefix
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -93,7 +96,7 @@ class SQLiteStorage(Storage):
             async with self._connection.execute("SELECT title_hash FROM post_titles") as cursor:
                 rows = await cursor.fetchall()
                 self._title_cache = {row[0] for row in rows}
-            logger.info(f"SQLiteStorage cache populated with {len(self._cache)} entries, {len(self._title_cache)} title hashes")
+            logger.info("SQLiteStorage cache populated with %s entries, %s title hashes", len(self._cache), len(self._title_cache))
         return self._connection
 
     async def mark_as_processed(self, post_id: str) -> None:
@@ -105,19 +108,29 @@ class SQLiteStorage(Storage):
             )
             await conn.commit()
             self._cache.add(post_id)
-            logger.info(f"Marked post {post_id} as processed (SQLite)")
+            logger.info("Marked post %s as processed (SQLite)", post_id)
         except Exception as e:
-            logger.error(f"Error marking post {post_id} as processed: {e}", exc_info=True)
+            logger.error("Error marking post %s as processed: %s", post_id, e, exc_info=True)
 
     async def is_processed(self, post_id: str) -> bool:
         try:
             await self._get_connection()
             return post_id in self._cache
         except Exception as e:
-            logger.error(f"Error checking if post {post_id} is processed: {e}", exc_info=True)
+            logger.error("Error checking if post %s is processed: %s", post_id, e, exc_info=True)
             return False
 
     # ── Title deduplication ──────────────────────────────────────────────
+
+    @staticmethod
+    def _is_free_from_game_info(game_info_map: dict) -> bool:
+        """Return True if any entry in game_info_map marks the game as free."""
+        for raw in game_info_map.values():
+            if isinstance(raw, dict) and raw.get("is_free"):
+                return True
+            if isinstance(raw, list) and any(isinstance(r, dict) and r.get("is_free") for r in raw):
+                return True
+        return False
 
     @staticmethod
     def _title_hash(title: str) -> str:
@@ -150,7 +163,7 @@ class SQLiteStorage(Storage):
                 if row:
                     return True, row[0], row[1]
             except Exception as e:
-                logger.error(f"Error checking title dedup (hash): {e}", exc_info=True)
+                logger.error("Error checking title dedup (hash): %s", e, exc_info=True)
             return True, "", ""
 
         # Fuzzy check by normalized title (catches near-duplicates from different sources)
@@ -164,7 +177,7 @@ class SQLiteStorage(Storage):
                 if row:
                     return True, row[0], row[1]
             except Exception as e:
-                logger.error(f"Error checking title dedup (normalized): {e}", exc_info=True)
+                logger.error("Error checking title dedup (normalized): %s", e, exc_info=True)
 
         return False, "", ""
 
@@ -181,7 +194,7 @@ class SQLiteStorage(Storage):
             await conn.commit()
             self._title_cache.add(h)
         except Exception as e:
-            logger.error(f"Error marking title seen: {e}", exc_info=True)
+            logger.error("Error marking title seen: %s", e, exc_info=True)
 
     # ── Dead Letter Queue ────────────────────────────────────────────────
 
@@ -196,7 +209,7 @@ class SQLiteStorage(Storage):
             )
             await conn.commit()
         except Exception as e:
-            logger.error(f"Error saving failed post {post_id}: {e}", exc_info=True)
+            logger.error("Error saving failed post %s: %s", post_id, e, exc_info=True)
 
     async def get_failed_posts(self, max_retries: int = 3) -> list[dict]:
         try:
@@ -208,7 +221,7 @@ class SQLiteStorage(Storage):
                 rows = await cursor.fetchall()
             return [{"id": r[0], "post_json": r[1], "retry_count": r[2]} for r in rows]
         except Exception as e:
-            logger.error(f"Error getting failed posts: {e}", exc_info=True)
+            logger.error("Error getting failed posts: %s", e, exc_info=True)
             return []
 
     async def increment_retry(self, post_id: str) -> None:
@@ -220,7 +233,7 @@ class SQLiteStorage(Storage):
             )
             await conn.commit()
         except Exception as e:
-            logger.error(f"Error incrementing retry for {post_id}: {e}", exc_info=True)
+            logger.error("Error incrementing retry for %s: %s", post_id, e, exc_info=True)
 
     async def delete_failed_post(self, post_id: str) -> None:
         try:
@@ -228,7 +241,7 @@ class SQLiteStorage(Storage):
             await conn.execute("DELETE FROM failed_posts WHERE id = ?", (post_id,))
             await conn.commit()
         except Exception as e:
-            logger.error(f"Error deleting failed post {post_id}: {e}", exc_info=True)
+            logger.error("Error deleting failed post %s: %s", post_id, e, exc_info=True)
 
     # ── Posts log ────────────────────────────────────────────────────────
 
@@ -250,16 +263,7 @@ class SQLiteStorage(Storage):
 
             stores_list = list(store_links.keys())
 
-            # Determine is_free from any GameInfo
-            is_free = False
-            for raw in game_info.values():
-                if isinstance(raw, dict) and raw.get("is_free"):
-                    is_free = True
-                    break
-                if isinstance(raw, list):
-                    if any(isinstance(r, dict) and r.get("is_free") for r in raw):
-                        is_free = True
-                        break
+            is_free = self._is_free_from_game_info(game_info)
 
             conn = await self._get_connection()
             await conn.execute(
@@ -297,7 +301,7 @@ class SQLiteStorage(Storage):
             )
             await conn.commit()
         except Exception as e:
-            logger.error(f"Error saving post {post.id} to posts log: {e}", exc_info=True)
+            logger.error("Error saving post %s to posts log: %s", post.id, e, exc_info=True)
 
     async def get_posts_stats(self) -> dict:
         """Return aggregate statistics from the posts log."""
@@ -326,7 +330,7 @@ class SQLiteStorage(Storage):
 
             return stats
         except Exception as e:
-            logger.error(f"Error getting posts stats: {e}", exc_info=True)
+            logger.error("Error getting posts stats: %s", e, exc_info=True)
             return {}
 
     async def get_recent_posts(self, limit: int = 5) -> list[dict]:
@@ -344,7 +348,7 @@ class SQLiteStorage(Storage):
                 for r in rows
             ]
         except Exception as e:
-            logger.error(f"Error getting recent posts: {e}", exc_info=True)
+            logger.error("Error getting recent posts: %s", e, exc_info=True)
             return []
 
     async def cleanup_old_posts(self, retention_days: int) -> int:
@@ -360,7 +364,7 @@ class SQLiteStorage(Storage):
             await conn.commit()
             return deleted
         except Exception as e:
-            logger.error(f"Error cleaning up old posts: {e}", exc_info=True)
+            logger.error("Error cleaning up old posts: %s", e, exc_info=True)
             return 0
 
     # ── Steam Catalog ─────────────────────────────────────────────────────
@@ -459,7 +463,7 @@ class SQLiteStorage(Storage):
                 "key_image": row[9], "description": row[10],
             }
         except Exception as e:
-            logger.error(f"Error getting EGS game {url_slug}: {e}", exc_info=True)
+            logger.error("Error getting EGS game %s: %s", url_slug, e, exc_info=True)
             return None
 
     async def upsert_egs_games(self, games: list[dict]) -> None:
@@ -487,7 +491,7 @@ class SQLiteStorage(Storage):
             )
             await conn.commit()
         except Exception as e:
-            logger.error(f"Error upserting EGS games: {e}", exc_info=True)
+            logger.error("Error upserting EGS games: %s", e, exc_info=True)
 
     async def update_egs_notification(self, url_slug: str, price_uah: int) -> None:
         """Record that a notification was sent for an EGS game at a given price."""
@@ -499,7 +503,7 @@ class SQLiteStorage(Storage):
             )
             await conn.commit()
         except Exception as e:
-            logger.error(f"Error updating EGS notification for {url_slug}: {e}", exc_info=True)
+            logger.error("Error updating EGS notification for %s: %s", url_slug, e, exc_info=True)
 
     async def find_egs_game_by_name(self, name: str) -> Optional[dict]:
         """Find an EGS game by case-insensitive trimmed name match."""
@@ -522,7 +526,7 @@ class SQLiteStorage(Storage):
                 "key_image": row[9], "description": row[10],
             }
         except Exception as e:
-            logger.error(f"Error finding EGS game by name {name!r}: {e}", exc_info=True)
+            logger.error("Error finding EGS game by name %s: %s", repr(name), e, exc_info=True)
             return None
 
     async def find_steam_game_by_name(self, name: str) -> Optional[dict]:
@@ -545,7 +549,7 @@ class SQLiteStorage(Storage):
                 "notified_price_uah": row[7], "notified_at": row[8],
             }
         except Exception as e:
-            logger.error(f"Error finding Steam game by name {name!r}: {e}", exc_info=True)
+            logger.error("Error finding Steam game by name %s: %s", repr(name), e, exc_info=True)
             return None
 
     async def get_steam_game(self, appid: int) -> Optional[dict]:
@@ -567,7 +571,7 @@ class SQLiteStorage(Storage):
                 "notified_price_uah": row[7], "notified_at": row[8],
             }
         except Exception as e:
-            logger.error(f"Error getting steam game {appid}: {e}", exc_info=True)
+            logger.error("Error getting steam game %s: %s", appid, e, exc_info=True)
             return None
 
     async def upsert_steam_games(self, games: list[dict]) -> None:
@@ -590,7 +594,7 @@ class SQLiteStorage(Storage):
             )
             await conn.commit()
         except Exception as e:
-            logger.error(f"Error upserting steam games: {e}", exc_info=True)
+            logger.error("Error upserting steam games: %s", e, exc_info=True)
 
     async def get_steam_appids(self) -> list[int]:
         """Return all appids stored in steam_catalog."""
@@ -600,7 +604,7 @@ class SQLiteStorage(Storage):
                 rows = await cursor.fetchall()
             return [row[0] for row in rows]
         except Exception as e:
-            logger.error(f"Error getting steam appids: {e}", exc_info=True)
+            logger.error("Error getting steam appids: %s", e, exc_info=True)
             return []
 
     async def update_steam_notification(self, appid: int, price_uah: int) -> None:
@@ -613,7 +617,7 @@ class SQLiteStorage(Storage):
             )
             await conn.commit()
         except Exception as e:
-            logger.error(f"Error updating steam notification for {appid}: {e}", exc_info=True)
+            logger.error("Error updating steam notification for %s: %s", appid, e, exc_info=True)
 
     # ── Free Games Catalog ────────────────────────────────────────────────
 
@@ -656,7 +660,7 @@ class SQLiteStorage(Storage):
                 "first_seen": row[6], "notified_at": row[7],
             }
         except Exception as e:
-            logger.error(f"Error getting free game {gid}: {e}", exc_info=True)
+            logger.error("Error getting free game %s: %s", gid, e, exc_info=True)
             return None
 
     async def upsert_free_game(self, gid: str, platform: str, game: dict, notified: bool) -> None:
@@ -681,30 +685,56 @@ class SQLiteStorage(Storage):
                 )
             await conn.commit()
         except Exception as e:
-            logger.error(f"Error upserting free game {gid}: {e}", exc_info=True)
+            logger.error("Error upserting free game %s: %s", gid, e, exc_info=True)
 
     # ── Estate ───────────────────────────────────────────────────────────
+    #
+    # An estate is one game event (a giveaway or a deal) — every post about it from any source
+    # (Pikabu, VGTimes, StopGame, monitors) is collected into one estate and sent as ONE message.
+    # Late duplicates attach to an already-sent estate and the sent message is edited instead.
 
-    _STORE_PRIORITY = {"steam": 4, "epicgames": 3, "gog": 2, "itch": 1}
+    ESTATE_MATCH_WINDOW_DAYS = 7
+    # Whose description wins when several sources describe the same event
+    _SOURCE_RANK = {"VGTimes": 3, "StopGame": 2, "Pikabu": 1}
+
+    _ESTATE_COLUMNS = (
+        "estate_id, title, kind, is_free, description, images, tags, games, "
+        "message_id, message_is_caption, alert_sent, needs_edit, created_at"
+    )
 
     async def init_estate_tables(self) -> None:
-        """Create estate tables if they don't exist."""
+        """Create estate tables if they don't exist and migrate old schemas."""
         conn = await self._get_connection()
         await conn.execute(
             """CREATE TABLE IF NOT EXISTS estates (
-                estate_id   TEXT PRIMARY KEY,
-                title       TEXT NOT NULL,
-                store_url   TEXT,
-                store_name  TEXT,
-                is_free     INTEGER DEFAULT 0,
-                description TEXT,
-                images      TEXT,
-                tags        TEXT,
-                created_at  TIMESTAMP NOT NULL,
-                flushed_at  TIMESTAMP,
-                alert_sent  INTEGER DEFAULT 0
+                estate_id        TEXT PRIMARY KEY,
+                title            TEXT NOT NULL,
+                title_normalized TEXT,
+                store_url        TEXT,
+                store_name       TEXT,
+                is_free          INTEGER DEFAULT 0,
+                description      TEXT,
+                images           TEXT,
+                tags             TEXT,
+                created_at       TIMESTAMP NOT NULL,
+                flushed_at       TIMESTAMP,
+                alert_sent       INTEGER DEFAULT 0
             )"""
         )
+        migrations = {
+            "title_normalized": "TEXT",
+            "kind": "TEXT",
+            "games": "TEXT",
+            "description_rank": "INTEGER DEFAULT 0",
+            "message_id": "INTEGER",
+            "message_is_caption": "INTEGER DEFAULT 0",
+            "needs_edit": "INTEGER DEFAULT 0",
+        }
+        async with conn.execute("PRAGMA table_info(estates)") as cursor:
+            existing_cols = {row[1] for row in await cursor.fetchall()}
+        for col, col_type in migrations.items():
+            if col not in existing_cols:
+                await conn.execute(f"ALTER TABLE estates ADD COLUMN {col} {col_type}")
         await conn.execute(
             """CREATE TABLE IF NOT EXISTS estate_posts (
                 estate_id  TEXT NOT NULL,
@@ -716,6 +746,14 @@ class SQLiteStorage(Storage):
             )"""
         )
         await conn.execute(
+            """CREATE TABLE IF NOT EXISTS estate_keys (
+                estate_id TEXT NOT NULL,
+                key       TEXT NOT NULL,
+                PRIMARY KEY (estate_id, key)
+            )"""
+        )
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_estate_keys_key ON estate_keys(key)")
+        await conn.execute(
             """CREATE TABLE IF NOT EXISTS failed_estates (
                 estate_id   TEXT PRIMARY KEY,
                 estate_json TEXT NOT NULL,
@@ -725,109 +763,148 @@ class SQLiteStorage(Storage):
             )"""
         )
         await conn.commit()
+        await self._backfill_estate_keys(conn)
 
-    async def upsert_estate(self, estate_id: str, title: str, post) -> None:
-        """Insert or merge a post into an estate.
+    async def _backfill_estate_keys(self, conn) -> None:
+        """Give recent pre-migration estates identity keys so new posts can match them."""
+        cutoff = datetime.now() - timedelta(days=self.ESTATE_MATCH_WINDOW_DAYS)
+        async with conn.execute(
+            "SELECT estate_id, title, store_name, store_url, is_free FROM estates "
+            "WHERE created_at >= ? AND kind IS NULL",
+            (cutoff,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for estate_id, title, store_name, store_url, is_free in rows:
+            links = {store_name: [store_url]} if store_name and store_url else {}
+            games = game_keys.games_from_links(links)
+            keys = game_keys.estate_keys(title, games)
+            kind = game_keys.event_kind(bool(is_free) or game_keys.looks_like_giveaway(title), title)
+            await conn.execute(
+                "UPDATE estates SET kind=?, games=?, title_normalized=? WHERE estate_id=?",
+                (kind, json.dumps(games, ensure_ascii=False), game_keys.compact(title), estate_id),
+            )
+            await conn.executemany(
+                "INSERT OR IGNORE INTO estate_keys (estate_id, key) VALUES (?, ?)",
+                [(estate_id, k) for k in keys],
+            )
+        if rows:
+            await conn.commit()
+            logger.info("[Estate] Backfilled identity keys for %d recent estates", len(rows))
 
-        Store priority: steam > epicgames > gog > itch.
-        is_free = MAX(existing, new). description = longest wins.
-        images/tags = merged+dedup JSON lists.
-        flushed_at is reset to NULL on update (new post re-activates estate).
+    async def find_matching_estate(self, keys: set[str], title: str, kind: str) -> Optional[str]:
+        """Return the newest estate (sent or not, within the match window) describing the same event.
+
+        Match = same kind AND (shared store/name key OR one side's game name appears in the other's headline).
         """
-        meta = post.metadata
-        store_links: dict = (meta.store_links or {}) if meta else {}
-        game_info_map: dict = (meta.game_info or {}) if meta else {}
-
-        # Best store from this post
-        post_store_name = None
-        post_store_url = None
-        for s in sorted(store_links.keys(), key=lambda x: self._STORE_PRIORITY.get(x, 0), reverse=True):
-            urls = store_links[s]
-            if urls:
-                post_store_name = s
-                post_store_url = str(urls[0])
-                break
-
-        # is_free
-        is_free = False
-        for raw in game_info_map.values():
-            if isinstance(raw, dict) and raw.get("is_free"):
-                is_free = True
-                break
-            if isinstance(raw, list):
-                if any(isinstance(r, dict) and r.get("is_free") for r in raw):
-                    is_free = True
-                    break
-
-        description = post.content or ""
-        images = [str(i) for i in ((meta.images or []) if meta else [])]
-        tags = [str(t) for t in ((meta.tags or []) if meta else [])]
-
+        cutoff = datetime.now() - timedelta(days=self.ESTATE_MATCH_WINDOW_DAYS)
         try:
             conn = await self._get_connection()
-            now = datetime.now()
+            if keys:
+                placeholders = ",".join("?" * len(keys))
+                async with conn.execute(
+                    f"SELECT e.estate_id FROM estate_keys k JOIN estates e ON e.estate_id = k.estate_id "
+                    f"WHERE k.key IN ({placeholders}) AND e.kind = ? AND e.created_at >= ? "
+                    f"ORDER BY e.created_at DESC LIMIT 1",
+                    (*keys, kind, cutoff),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row:
+                    return row[0]
 
+            # Fuzzy: a game name of one side is contained in the other side's headline
+            min_len = game_keys.MIN_SUBSTRING_LEN
+            new_names = {k[5:] for k in keys if k.startswith("name:") and len(k) - 5 >= min_len}
+            new_title = game_keys.compact(title)
             async with conn.execute(
-                "SELECT store_name, store_url, is_free, description, images, tags "
+                "SELECT e.estate_id, e.title_normalized, group_concat(k.key, '|') FROM estates e "
+                "LEFT JOIN estate_keys k ON k.estate_id = e.estate_id AND k.key LIKE 'name:%' "
+                "WHERE e.kind = ? AND e.created_at >= ? GROUP BY e.estate_id ORDER BY e.created_at DESC",
+                (kind, cutoff),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            for estate_id, old_title, old_keys in rows:
+                old_names = {k[5:] for k in (old_keys or "").split("|") if len(k) - 5 >= min_len}
+                if any(n in (old_title or "") for n in new_names) or any(n in new_title for n in old_names):
+                    return estate_id
+            return None
+        except Exception as e:
+            logger.error("[Estate] find_matching_estate error: %s", e, exc_info=True)
+            return None
+
+    async def upsert_estate(
+        self,
+        estate_id: str,
+        title: str,
+        *,
+        kind: str,
+        is_free: bool,
+        description: str = "",
+        source: Optional[str] = None,
+        images: Optional[list] = None,
+        tags: Optional[list] = None,
+        games: Optional[list] = None,
+        keys: Optional[set] = None,
+    ) -> bool:
+        """Insert or merge data into an estate. Returns True if the estate was already sent
+        (the sent message should then be edited rather than a new one sent)."""
+        images = [str(i) for i in (images or [])]
+        tags = [str(t) for t in (tags or [])]
+        games = games or []
+        rank = self._SOURCE_RANK.get(source or "", 0)
+        try:
+            conn = await self._get_connection()
+            async with conn.execute(
+                "SELECT is_free, description, description_rank, images, tags, games, alert_sent "
                 "FROM estates WHERE estate_id=?",
                 (estate_id,),
             ) as cursor:
                 existing = await cursor.fetchone()
 
+            already_sent = False
             if existing:
-                ex_store_name, ex_store_url, ex_is_free, ex_description, ex_images_json, ex_tags_json = existing
-
-                # Priority-based store merge
-                ex_priority = self._STORE_PRIORITY.get(ex_store_name or "", 0)
-                new_priority = self._STORE_PRIORITY.get(post_store_name or "", 0)
-                if new_priority > ex_priority and post_store_url:
-                    final_store_name = post_store_name
-                    final_store_url = post_store_url
+                ex_free, ex_desc, ex_rank, ex_images, ex_tags, ex_games, alert_sent = existing
+                already_sent = bool(alert_sent)
+                ex_rank = ex_rank or 0
+                if description and (rank > ex_rank or not ex_desc):
+                    final_desc, final_rank = description, rank
                 else:
-                    final_store_name = ex_store_name
-                    final_store_url = ex_store_url
-
-                final_is_free = max(int(ex_is_free or 0), int(is_free))
-
-                ex_desc = ex_description or ""
-                final_description = description if len(description) > len(ex_desc) else ex_desc
-
-                ex_images = json.loads(ex_images_json or "[]")
-                merged_images = list(dict.fromkeys(ex_images + images))
-
-                ex_tags = json.loads(ex_tags_json or "[]")
-                merged_tags = list(dict.fromkeys(ex_tags + tags))
-
+                    final_desc, final_rank = ex_desc or "", ex_rank
+                merged_games = game_keys.merge_games(json.loads(ex_games or "[]"), games)
                 await conn.execute(
-                    """UPDATE estates SET
-                           store_name=?, store_url=?, is_free=?, description=?,
-                           images=?, tags=?, flushed_at=NULL
+                    """UPDATE estates SET is_free=?, description=?, description_rank=?, images=?, tags=?,
+                           games=?, needs_edit=CASE WHEN alert_sent=1 THEN 1 ELSE needs_edit END
                        WHERE estate_id=?""",
                     (
-                        final_store_name, final_store_url, final_is_free, final_description,
-                        json.dumps(merged_images, ensure_ascii=False),
-                        json.dumps(merged_tags, ensure_ascii=False),
+                        max(int(ex_free or 0), int(is_free)), final_desc, final_rank,
+                        json.dumps(list(dict.fromkeys(json.loads(ex_images or "[]") + images)), ensure_ascii=False),
+                        json.dumps(list(dict.fromkeys(json.loads(ex_tags or "[]") + tags)), ensure_ascii=False),
+                        json.dumps(merged_games, ensure_ascii=False),
                         estate_id,
                     ),
                 )
             else:
                 await conn.execute(
                     """INSERT INTO estates
-                           (estate_id, title, store_url, store_name, is_free,
-                            description, images, tags, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           (estate_id, title, title_normalized, kind, is_free, description, description_rank,
+                            images, tags, games, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        estate_id, title, post_store_url, post_store_name, int(is_free),
-                        description,
-                        json.dumps(images, ensure_ascii=False),
-                        json.dumps(tags, ensure_ascii=False),
-                        now,
+                        estate_id, title, game_keys.compact(title), kind, int(is_free), description, rank,
+                        json.dumps(images, ensure_ascii=False), json.dumps(tags, ensure_ascii=False),
+                        json.dumps(game_keys.merge_games([], games), ensure_ascii=False), datetime.now(),
                     ),
+                )
+            if keys:
+                await conn.executemany(
+                    "INSERT OR IGNORE INTO estate_keys (estate_id, key) VALUES (?, ?)",
+                    [(estate_id, k) for k in keys],
                 )
             await conn.commit()
             logger.debug("[Estate] Upserted estate %s for title: %s", estate_id[:8], title)
+            return already_sent
         except Exception as e:
             logger.error("[Estate] Error upserting estate %s: %s", estate_id[:8], e, exc_info=True)
+            return False
 
     async def add_post_to_estate(self, estate_id: str, post) -> None:
         """Register a post as part of an estate (idempotent)."""
@@ -842,61 +919,95 @@ class SQLiteStorage(Storage):
         except Exception as e:
             logger.error("[Estate] Error adding post %s to estate %s: %s", post.id, estate_id[:8], e, exc_info=True)
 
+    async def _load_estates(self, where: str, params: tuple = ()) -> list[dict]:
+        conn = await self._get_connection()
+        async with conn.execute(f"SELECT {self._ESTATE_COLUMNS} FROM estates WHERE {where}", params) as cursor:
+            rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            (estate_id, title, kind, is_free, description, images_json, tags_json, games_json,
+             message_id, message_is_caption, alert_sent, needs_edit, created_at) = row
+            async with conn.execute(
+                "SELECT ep.post_id, ep.source, ep.post_link, p.title FROM estate_posts ep "
+                "LEFT JOIN posts p ON p.id = ep.post_id AND p.source = ep.source "
+                "WHERE ep.estate_id=? ORDER BY ep.added_at",
+                (estate_id,),
+            ) as cursor:
+                post_rows = await cursor.fetchall()
+            result.append({
+                "estate_id": estate_id,
+                "title": title,
+                "kind": kind or "",
+                "is_free": bool(is_free),
+                "description": description or "",
+                "images": json.loads(images_json or "[]"),
+                "tags": json.loads(tags_json or "[]"),
+                "games": json.loads(games_json or "[]"),
+                "posts": [
+                    {"post_id": r[0], "source": r[1], "post_link": r[2], "title": r[3] or ""} for r in post_rows
+                ],
+                "message_id": message_id,
+                "message_is_caption": bool(message_is_caption),
+                "alert_sent": bool(alert_sent),
+                "needs_edit": bool(needs_edit),
+                "created_at": created_at,
+            })
+        return result
+
+    async def get_estate(self, estate_id: str) -> Optional[dict]:
+        try:
+            estates = await self._load_estates("estate_id=?", (estate_id,))
+            return estates[0] if estates else None
+        except Exception as e:
+            logger.error("[Estate] Error loading estate %s: %s", estate_id[:8], e, exc_info=True)
+            return None
+
     async def get_pending_estates(self) -> list[dict]:
         """Return all estates not yet flushed, with their associated posts."""
         try:
-            conn = await self._get_connection()
-            async with conn.execute(
-                "SELECT estate_id, title, store_url, store_name, is_free, description, images, tags "
-                "FROM estates WHERE flushed_at IS NULL AND alert_sent=0"
-            ) as cursor:
-                estate_rows = await cursor.fetchall()
-
-            result = []
-            for row in estate_rows:
-                estate_id, title, store_url, store_name, is_free, description, images_json, tags_json = row
-                async with conn.execute(
-                    "SELECT post_id, source, post_link FROM estate_posts WHERE estate_id=?",
-                    (estate_id,),
-                ) as cursor:
-                    post_rows = await cursor.fetchall()
-
-                posts = [{"post_id": r[0], "source": r[1], "post_link": r[2]} for r in post_rows]
-                result.append({
-                    "estate_id": estate_id,
-                    "title": title,
-                    "store_url": store_url,
-                    "store_name": store_name,
-                    "is_free": bool(is_free),
-                    "description": description or "",
-                    "images": json.loads(images_json or "[]"),
-                    "tags": json.loads(tags_json or "[]"),
-                    "posts": posts,
-                })
-            return result
+            return await self._load_estates("flushed_at IS NULL AND alert_sent=0 ORDER BY created_at")
         except Exception as e:
             logger.error("[Estate] Error getting pending estates: %s", e, exc_info=True)
             return []
 
-    async def mark_estate_flushed(self, estate_id: str, sent: bool) -> None:
-        """Mark an estate as flushed (processed this cycle)."""
+    async def get_estates_to_edit(self) -> list[dict]:
+        """Return sent estates that received new posts after their message was sent."""
+        try:
+            return await self._load_estates("alert_sent=1 AND needs_edit=1")
+        except Exception as e:
+            logger.error("[Estate] Error getting estates to edit: %s", e, exc_info=True)
+            return []
+
+    async def mark_estate_flushed(
+        self, estate_id: str, sent: bool, message_id: Optional[int] = None, is_caption: bool = False,
+    ) -> None:
+        """Mark an estate as flushed (processed this cycle), remembering the sent message for later edits."""
         try:
             conn = await self._get_connection()
             await conn.execute(
-                "UPDATE estates SET flushed_at=?, alert_sent=? WHERE estate_id=?",
-                (datetime.now(), int(sent), estate_id),
+                "UPDATE estates SET flushed_at=?, alert_sent=?, needs_edit=0, "
+                "message_id=COALESCE(?, message_id), message_is_caption=? WHERE estate_id=?",
+                (datetime.now(), int(sent), message_id, int(is_caption), estate_id),
             )
             await conn.commit()
         except Exception as e:
             logger.error("[Estate] Error marking estate flushed %s: %s", estate_id[:8], e, exc_info=True)
+
+    async def clear_estate_edit(self, estate_id: str) -> None:
+        try:
+            conn = await self._get_connection()
+            await conn.execute("UPDATE estates SET needs_edit=0 WHERE estate_id=?", (estate_id,))
+            await conn.commit()
+        except Exception as e:
+            logger.error("[Estate] Error clearing edit flag %s: %s", estate_id[:8], e, exc_info=True)
 
     async def mark_posts_sent(self, estate_id: str) -> None:
         """Mark all posts belonging to an estate as sent in the posts log."""
         try:
             conn = await self._get_connection()
             await conn.execute(
-                "UPDATE posts SET sent=1, sent_at=? "
-                "WHERE id IN (SELECT post_id FROM estate_posts WHERE estate_id=?)",
+                "UPDATE posts SET sent=1, sent_at=COALESCE(sent_at, ?) "
+                "WHERE (id, source) IN (SELECT post_id, source FROM estate_posts WHERE estate_id=?)",
                 (datetime.now(), estate_id),
             )
             await conn.commit()

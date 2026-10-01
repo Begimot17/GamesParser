@@ -1,8 +1,10 @@
 """Game info lookup service (price, genre, metacritic) for Steam, EGS, and GOG."""
 
 import asyncio
+import dataclasses
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -30,65 +32,39 @@ _LANG_UA_RE = re.compile(r'Украин|Українськ|Ukrainian', re.IGNORE
 _AUDIO_RE = re.compile(r'<strong>\*</strong>')
 
 
+@dataclass(slots=True)
 class GameInfo:
     """Aggregated info about a game from a store page."""
 
-    __slots__ = (
-        "name", "price", "original_price", "discount_pct", "genre", "metacritic",
-        "developer", "is_free", "review_score", "short_description", "header_image",
-        # Extended Steam fields
-        "has_controller_support", "has_multiplayer",
-        "has_russian_text", "has_russian_audio",
-        "has_ukrainian_text", "has_ukrainian_audio",
-        "recommendations_total", "top_reviews",
-    )
+    name: Optional[str] = None
+    price: Optional[str] = None
+    original_price: Optional[str] = None
+    discount_pct: int = 0
+    genre: Optional[str] = None
+    metacritic: Optional[int] = None
+    developer: Optional[str] = None
+    is_free: bool = False
+    review_score: Optional[str] = None
+    short_description: Optional[str] = None
+    header_image: Optional[str] = None
+    # Extended Steam fields
+    has_controller_support: bool = False
+    has_multiplayer: bool = False
+    has_russian_text: bool = False
+    has_russian_audio: bool = False
+    has_ukrainian_text: bool = False
+    has_ukrainian_audio: bool = False
+    recommendations_total: Optional[int] = None
+    top_reviews: Optional[list] = None
 
-    def __init__(
-        self,
-        name: Optional[str] = None,
-        price: Optional[str] = None,
-        original_price: Optional[str] = None,
-        discount_pct: int = 0,
-        genre: Optional[str] = None,
-        metacritic: Optional[int] = None,
-        developer: Optional[str] = None,
-        is_free: bool = False,
-        review_score: Optional[str] = None,
-        short_description: Optional[str] = None,
-        header_image: Optional[str] = None,
-        has_controller_support: bool = False,
-        has_multiplayer: bool = False,
-        has_russian_text: bool = False,
-        has_russian_audio: bool = False,
-        has_ukrainian_text: bool = False,
-        has_ukrainian_audio: bool = False,
-        recommendations_total: Optional[int] = None,
-        top_reviews: Optional[list] = None,
-    ):
-        self.name = name
-        self.price = price
-        self.original_price = original_price
-        self.discount_pct = discount_pct
-        self.genre = genre
-        self.metacritic = metacritic
-        self.developer = developer
-        self.is_free = is_free
-        self.review_score = review_score
-        self.short_description = short_description
-        self.header_image = header_image
-        self.has_controller_support = has_controller_support
-        self.has_multiplayer = has_multiplayer
-        self.has_russian_text = has_russian_text
-        self.has_russian_audio = has_russian_audio
-        self.has_ukrainian_text = has_ukrainian_text
-        self.has_ukrainian_audio = has_ukrainian_audio
-        self.recommendations_total = recommendations_total
-        self.top_reviews = top_reviews or []
+    def __post_init__(self):
+        if self.top_reviews is None:
+            self.top_reviews = []
 
     def format_price(self) -> Optional[str]:
         """Returns HTML-formatted price string with discount markers."""
         if self.is_free:
-            return "Безкоштовно"
+            return "Бесплатно"
         if not self.price:
             return None
         if self.discount_pct and self.original_price:
@@ -96,33 +72,12 @@ class GameInfo:
         return self.price
 
     def to_dict(self) -> dict:
-        return {
-            "name": self.name,
-            "price": self.price,
-            "original_price": self.original_price,
-            "discount_pct": self.discount_pct,
-            "genre": self.genre,
-            "metacritic": self.metacritic,
-            "developer": self.developer,
-            "is_free": self.is_free,
-            "review_score": self.review_score,
-            "short_description": self.short_description,
-            "header_image": self.header_image,
-            "has_controller_support": self.has_controller_support,
-            "has_multiplayer": self.has_multiplayer,
-            "has_russian_text": self.has_russian_text,
-            "has_russian_audio": self.has_russian_audio,
-            "has_ukrainian_text": self.has_ukrainian_text,
-            "has_ukrainian_audio": self.has_ukrainian_audio,
-            "recommendations_total": self.recommendations_total,
-            "top_reviews": self.top_reviews,
-        }
+        return dataclasses.asdict(self)
 
-    @staticmethod
-    def from_dict(d: dict) -> "GameInfo":
-        # Filter to known keys so old serialized dicts don't break
-        known = {f for f in GameInfo.__slots__}
-        return GameInfo(**{k: v for k, v in d.items() if k in known})
+    @classmethod
+    def from_dict(cls, d: dict) -> "GameInfo":
+        known = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in known})
 
 
 class PriceService:

@@ -18,14 +18,14 @@ class LLMG4F(LLMInterface):
         messages = [{"role": h["role"], "content": h["content"]} for h in history]
         messages.insert(0, {"role": "system", "content": prompt})
 
-        logger.info(f"Sending request to LLM with model {self.model}")
+        logger.info("Sending request to LLM with model %s", self.model)
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             web_search=False,
         )
         response_text = response.choices[0].message.content
-        logger.info(f"LLM response: {response_text[:200]}...")
+        logger.info("LLM response: %s...", response_text[:200])
         return response_text
 
     async def extract_article_info(self, page_text: str, url: str) -> dict:
@@ -64,18 +64,18 @@ Article text for analysis:"""
 
         response_text = ""
         try:
-            logger.info(f"Extracting article info from {url} using {self.model}")
+            logger.info("Extracting article info from %s using %s", url, self.model)
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 web_search=False,
             )
             response_text = response.choices[0].message.content.strip()
-            logger.debug(f"LLM raw response for {url}: {response_text}")
+            logger.debug("LLM raw response for %s: %s", url, response_text)
 
             json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
             if not json_match:
-                logger.warning(f"No JSON found in LLM response for {url}")
+                logger.warning("No JSON found in LLM response for %s", url)
                 return self._default_error_response("No JSON found in response")
 
             json_str = json_match.group()
@@ -84,11 +84,11 @@ Article text for analysis:"""
             if "store_links" in data and isinstance(data["store_links"], dict):
                 data["store_links"] = {k: v for k, v in data["store_links"].items() if v and "http" in str(v)}
 
-            logger.info(f"Successfully extracted info for {url}")
+            logger.info("Successfully extracted info for %s", url)
             return data
 
         except json.JSONDecodeError as e:
-            logger.error(f"JSON decode error for {url}: {e}. Response: {response_text}")
+            logger.error("JSON decode error for %s: %s. Response: %s", url, e, response_text)
             return self._default_error_response(f"JSON decode error: {e}")
         except Exception as e:
             logger.error(

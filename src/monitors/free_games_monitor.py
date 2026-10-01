@@ -35,6 +35,7 @@ class FreeGamesMonitor(PriceMonitorBase):
                 if stored and stored.get("notified_at"):
                     continue  # already notified
 
+                # _dispatch_alert skips giveaways already covered by an estate (parser posts)
                 success = await self._dispatch_alert(
                     display_name=game["name"],
                     url=game["url"],
@@ -48,6 +49,8 @@ class FreeGamesMonitor(PriceMonitorBase):
                     short_description=game.get("description"),
                     cross_store_data=None,
                     store=platform,
+                    worth=game.get("worth"),
+                    kind_hint=game.get("platforms", ""),
                 )
                 await self.storage.upsert_free_game(gid, platform, game, success)
                 if success:

@@ -41,6 +41,25 @@ def monitor():
     m.storage.get_failed_posts = AsyncMock(return_value=[])
     m.storage.save_post = AsyncMock()
     m.storage.close = AsyncMock()
+    m.storage.upsert_estate = AsyncMock()
+    m.storage.add_post_to_estate = AsyncMock()
+    m.storage.get_estate_posts = AsyncMock(return_value=[])
+    m.storage.get_pending_estates = AsyncMock(return_value=[])
+    m.storage.mark_estate_flushed = AsyncMock()
+    m.storage.mark_posts_sent = AsyncMock()
+    m.storage.save_failed_estate = AsyncMock()
+    m.storage.get_failed_estates = AsyncMock(return_value=[])
+    m.storage.delete_failed_estate = AsyncMock()
+    m.storage.increment_estate_retry = AsyncMock()
+    m.storage.delete_failed_post = AsyncMock()
+    m.storage.increment_retry = AsyncMock()
+    m.storage.cleanup_old_posts = AsyncMock(return_value=0)
+    m.storage.init_estate_tables = AsyncMock()
+    m.storage.find_matching_estate = AsyncMock(return_value=None)
+    m.storage.upsert_estate = AsyncMock(return_value=False)
+    m.storage.get_estates_to_edit = AsyncMock(return_value=[])
+    m.storage.get_estate = AsyncMock(return_value=None)
+    m.storage.clear_estate_edit = AsyncMock()
     # Storage is centralised in parser_manager now
     m.parser_manager.storage = m.storage
     return m
@@ -61,14 +80,30 @@ class TestNewsMonitorStreaming:
 
         async def fake_stream():
             yield post
+            yield None  # cycle sentinel → triggers _flush_pending_estates
 
         monitor.parser_manager = MagicMock()
         monitor.parser_manager.stream_posts = fake_stream
 
+        # Simulate one pending estate that should be flushed
+        pending_estate = {
+            "estate_id": "abc123",
+            "title": "Test Post",
+            "store_url": None,
+            "store_name": None,
+            "is_free": False,
+            "description": "Content",
+            "posts": [{"source": "Pikabu", "post_link": "https://pikabu.ru/story/test_1"}],
+            "tags": [],
+            "images": [],
+        }
+        monitor.storage.get_pending_estates = AsyncMock(return_value=[pending_estate])
+        monitor.bot.formatter.format_estate_alert = MagicMock(return_value="formatted estate")
+
         asyncio.run(monitor._run_streaming())
 
         monitor.bot.send_message.assert_called_once()
-        monitor.storage.mark_as_processed.assert_called_once_with("42")
+        monitor.storage.mark_estate_flushed.assert_called_once()
 
     def test_run_streaming_skips_processed(self, monitor):
         post = make_post("99")

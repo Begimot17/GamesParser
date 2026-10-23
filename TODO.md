@@ -14,7 +14,7 @@
 - [x] Write comprehensive unit tests for `vgtimes_parser.py`.
 - [x] Write comprehensive unit tests for `stopgame_parser.py`.
 - [x] Add integration tests for the parsing process.
-- [ ] Write tests for new features.
+- [x] Write tests for new features (LLM provider and validator).
 
 ## Logging and Error Handling
 - [x] Implement saving of warning logs to a separate file.

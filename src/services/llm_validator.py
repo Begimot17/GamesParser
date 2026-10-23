@@ -2,6 +2,7 @@
 import re
 from urllib.parse import urlparse
 
+
 STORE_DOMAINS = {
     "steam": ("store.steampowered.com",),
     "epicgames": ("store.epicgames.com", "epicgames.com"),

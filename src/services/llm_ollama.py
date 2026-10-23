@@ -12,7 +12,7 @@ class LLMOllama(ChatLLM):
         self.base_url = (base_url or settings.OLLAMA_URL).rstrip("/")
         self.timeout = settings.OLLAMA_TIMEOUT
 
-    async def _chat(self, messages: list[dict], json_mode: bool = False) -> str:
+    async def _chat(self, messages: list[dict], *, json_mode: bool = False) -> str:
         payload = {
             "model": self.model,
             "messages": messages,

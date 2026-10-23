@@ -3,6 +3,8 @@ import unittest
 
 from src.services.llm_validator import validate_content, validate_store_links, validate_title
 
+
+ORIG = "Epic Games раздаёт Neon Drifter бесплатно"
 PAGE = "Epic Games раздаёт Neon Drifter бесплатно. https://store.epicgames.com/ru/p/neon-drifter Комментарии (12)"
 
 
@@ -42,10 +44,10 @@ class TestTitle(unittest.TestCase):
 
 class TestContent(unittest.TestCase):
     def test_accepts_cleaned_content(self):
-        self.assertEqual(validate_content("Epic Games раздаёт Neon Drifter бесплатно", "Epic Games раздаёт Neon Drifter бесплатно Комментарии", PAGE), "Epic Games раздаёт Neon Drifter бесплатно")
+        self.assertEqual(validate_content(ORIG, ORIG + " Комментарии", PAGE), ORIG)
 
     def test_rejects_truncated_content(self):
-        self.assertEqual(validate_content("Neon", "Epic Games раздаёт Neon Drifter бесплатно" * 5, PAGE), "Epic Games раздаёт Neon Drifter бесплатно" * 5)
+        self.assertEqual(validate_content("Neon", ORIG * 5, PAGE), ORIG * 5)
 
     def test_rejects_invented_content(self):
         invented = "Игра получила множество наград критиков и восторженные отзывы игроков по всему миру"

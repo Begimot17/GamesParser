@@ -9,7 +9,7 @@ class LLMG4F(ChatLLM):
         self.client = AsyncClient()
         self.model = model_name or settings.LLM_MODEL
 
-    async def _chat(self, messages: list[dict], json_mode: bool = False) -> str:
+    async def _chat(self, messages: list[dict], *, json_mode: bool = False) -> str:  # noqa: ARG002
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,

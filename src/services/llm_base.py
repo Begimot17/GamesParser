@@ -6,7 +6,9 @@ from typing import Any, Dict
 from src.common.logger import logger
 from src.services.llm_interface import LLMInterface
 
-EXTRACT_PROMPT = """You are an expert in analyzing gaming news. Your task is to extract structured information from article text and return ONLY valid JSON.
+
+EXTRACT_PROMPT = """You are an expert in analyzing gaming news.
+Your task is to extract structured information from article text and return ONLY valid JSON.
 
 JSON format:
 {
@@ -43,10 +45,10 @@ class ChatLLM(LLMInterface):
     model: str
 
     @abstractmethod
-    async def _chat(self, messages: list[dict], json_mode: bool = False) -> str:
+    async def _chat(self, messages: list[dict], *, json_mode: bool = False) -> str:
         """Send chat messages, return the assistant's text."""
 
-    async def generate_response(self, prompt: str, history: list[dict], **kwargs) -> str:
+    async def generate_response(self, prompt: str, history: list[dict], **kwargs) -> str:  # noqa: ARG002
         messages = [{"role": "system", "content": prompt}]
         messages += [{"role": h["role"], "content": h["content"]} for h in history]
         logger.info("Sending request to LLM with model %s", self.model)
@@ -97,8 +99,8 @@ class ChatLLM(LLMInterface):
             "store_links": {},
         }
 
-    async def generate_reminder_message(self, reminder_type: str, user_context: Dict[str, Any]) -> str:
+    async def generate_reminder_message(self, reminder_type: str, user_context: Dict[str, Any]) -> str:  # noqa: ARG002
         return ""
 
-    async def generate_updated_prompt(self, prompt: str, history: list[dict], **kwargs) -> str:
+    async def generate_updated_prompt(self, prompt: str, history: list[dict], **kwargs) -> str:  # noqa: ARG002
         return ""

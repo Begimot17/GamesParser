@@ -57,7 +57,11 @@ class Settings(BaseSettings):
     ADMIN_USER_IDS: list[int] = []
 
     # LLM settings
-    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_PROVIDER: str = "ollama"  # "ollama" (local) or "g4f"
+    LLM_MODEL: str = "gpt-4o-mini"  # g4f model
+    OLLAMA_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen2.5:3b"
+    OLLAMA_TIMEOUT: float = 180.0  # CPU inference is slow
     ENABLE_LLM: bool = False  # Set to True to enable LLM data enrichment
 
     # Steam price monitor settings

@@ -43,6 +43,8 @@ main.py (NewsMonitor)
 | `MAX_POSTS_PER_CHECK` | — | Макс. постов за цикл (по умолчанию `5`) |
 | `SAVE_ALL_FETCHED_HTML` | — | Сохранять HTML для отладки (`True`/`False`) |
 | `ENABLE_LLM` | — | Обогащение данных через LLM (`False`) |
+| `LLM_PROVIDER` | — | `ollama` (локально, по умолчанию) или `g4f` |
+| `OLLAMA_MODEL` | — | Модель Ollama (`qwen2.5:3b`), `OLLAMA_URL` — `http://localhost:11434` |
 | `DEBUG` | — | Режим отладки (`False`) |
 
 Пример `.env`:

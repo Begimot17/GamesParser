@@ -22,6 +22,8 @@ httpx = "^0.28.1"
 pyyaml = "^6.0.3"
 pydantic-settings = "^2.12.0"
 epicstore_api = ">=0.2.0"
+cloudscraper = ">=1.2.71"
+g4f = ">=0.4.0"
 
 [tool.poetry.scripts]
 lint = "bash -c 'poetry run isort . && poetry run ruff format . && poetry run ruff check . --fix && poetry run pylint src'"

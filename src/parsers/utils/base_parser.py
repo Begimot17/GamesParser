@@ -58,11 +58,18 @@ class BaseParser(ABC):
         """Lazily initialise LLM and PriceService (avoids import-time circular deps)."""
         if self._services_initialized:
             return
-        from src.services.llm_g4f import LLMG4F
         from src.services.price_service import PriceService
-        self._llm = LLMG4F(model_name=settings.LLM_MODEL) if settings.ENABLE_LLM else None
+        self._llm = self._create_llm() if settings.ENABLE_LLM else None
         self._price_service = PriceService()
         self._services_initialized = True
+
+    @staticmethod
+    def _create_llm():
+        if settings.LLM_PROVIDER == "g4f":
+            from src.services.llm_g4f import LLMG4F
+            return LLMG4F(model_name=settings.LLM_MODEL)
+        from src.services.llm_ollama import LLMOllama
+        return LLMOllama()
 
     @property
     def llm(self):

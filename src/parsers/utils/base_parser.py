@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup, Tag
 from src.bot.retry_handler import retry
 from src.common.logger import logger
 from src.config.config import RATE_LIMIT_DELAY, settings
+from src.services.llm_validator import validate_content, validate_store_links, validate_title
 
 
 class BaseParser(ABC):
@@ -253,12 +254,11 @@ class BaseParser(ABC):
         if page_text:
             llm_data = await self.llm.extract_article_info(page_text, link)
             logger.info("[%s] LLM extracted data for %s: %s", self.__class__.__name__, link, llm_data)
-            if llm_data.get("title"):
-                title = llm_data["title"]
-            if llm_data.get("content"):
-                content = llm_data["content"]
-            if llm_data.get("store_links"):
-                store_links = {k: v for k, v in llm_data["store_links"].items() if v and str(v).strip()}
+            title = validate_title(llm_data.get("title"), title)
+            content = validate_content(llm_data.get("content"), content, page_text)
+            validated = validate_store_links(llm_data.get("store_links"), page_text, store_links)
+            if validated:
+                store_links = {**validated, **store_links}  # parsed links win over LLM ones
             if llm_data.get("images"):
                 images.extend(llm_data["images"])
         return title, content, images, store_links

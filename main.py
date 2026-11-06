@@ -1,5 +1,8 @@
+import argparse
 import asyncio
 import json
+import os
+import time
 import re
 import sys
 import uuid
@@ -99,6 +102,42 @@ class NewsMonitor:
         finally:
             await self.storage.close()
             await self.bot.close()
+
+    async def run_once(self):
+        """Один проход (запуск задачей раз в 6 ч): парсеры до конца цикла и мониторы, которым пора; без бота."""
+        logger.info("Starting NewsMonitor (one pass)...")
+        await self.storage.init_estate_tables()
+        try:
+            await self._run_streaming(once=True)
+            await self._run_due_monitors()
+        finally:
+            await self.storage.close()
+            await self.bot.close()
+
+    async def _run_due_monitors(self):
+        """Скан монитора, только если с прошлого прошло его scan_interval (мониторам на 12 ч хватает каждого второго
+        запуска). Время прошлых сканов - в JSON рядом с БД."""
+        path = os.path.join(os.path.dirname(os.path.abspath(self.settings.DB_PATH)), "once_monitors.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                last = json.load(f)
+        except (OSError, ValueError):
+            last = {}
+        slack = 15 * 60  # задача стартует не секунда в секунду
+        for m in self.monitors:
+            name = type(m).__name__
+            interval = m._get_scan_interval()
+            if time.time() - last.get(name, 0) < interval - slack:
+                logger.info("[%s] Scan not due yet (interval=%ds), skipping", name, interval)
+                continue
+            try:
+                await m._init_store_tables()
+                await m._run_cycle()
+                last[name] = time.time()
+            except Exception as e:
+                logger.error("[%s] Cycle error: %s", name, e, exc_info=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(last, f)
 
     def _safe_images(self, post: Post) -> list[str]:
         """Filter images to only https:// URLs."""
@@ -292,10 +331,11 @@ class NewsMonitor:
                 logger.error("[Estate DLQ] Error retrying estate %s: %s", estate_id[:8], e, exc_info=True)
                 await self.storage.increment_estate_retry(estate_id)
 
-    async def _run_streaming(self):
-        """Runs the monitoring loop using streaming with estate-based grouping."""
+    async def _run_streaming(self, once: bool = False):
+        """Runs the monitoring loop using streaming with estate-based grouping. once: stop after the first cycle."""
         logger.info("Starting streaming mode...")
-        async for item in self.parser_manager.stream_posts():
+        stream = self.parser_manager.stream_posts()
+        async for item in stream:
             if item is None:
                 # End-of-cycle sentinel: flush estates, retry the DLQ, daily cleanup
                 today = date.today()
@@ -310,6 +350,9 @@ class NewsMonitor:
 
                 await self._flush_pending_estates()
                 await self._retry_failed_estates()
+                if once:
+                    await stream.aclose()
+                    return
                 continue
 
             post: Post = item
@@ -325,9 +368,12 @@ class NewsMonitor:
 
 def main() -> None:
     """Entry point."""
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--once", action="store_true", help="one pass of parsers and due monitors, no bot polling, then exit")
+    args = ap.parse_args()
     try:
         monitor = NewsMonitor()
-        asyncio.run(monitor.run())
+        asyncio.run(monitor.run_once() if args.once else monitor.run())
     except ValueError as e:
         logger.error("Configuration error: %s", e)
         sys.exit(1)

@@ -4,7 +4,7 @@ import asyncio
 import random
 from typing import Any, Callable
 
-from telegram.error import NetworkError, RetryAfter, TimedOut
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TimedOut
 
 from src.common.logger import logger
 
@@ -37,6 +37,9 @@ class RetryHandler:
         for attempt in range(self.max_retries):
             try:
                 return await func(*args, **kwargs)
+            except (BadRequest, Forbidden):
+                # BadRequest subclasses NetworkError in PTB, but the same request will fail again
+                raise
             except (TimedOut, NetworkError) as e:
                 last_error = e
                 delay = self.calculate_delay(attempt)

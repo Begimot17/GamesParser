@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from src.config.config import settings
 
@@ -20,8 +21,9 @@ def setup_logger():
     log_level = settings.LOG_LEVEL
     logger.setLevel(log_level)
 
-    # Ensure logs directory exists
-    os.makedirs("logs", exist_ok=True)
+    # Tests point LOG_DIR to a temp dir so they do not write into the bot's real logs
+    log_dir = Path(os.environ.get("LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Formatter
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -34,13 +36,13 @@ def setup_logger():
     logger.addHandler(stdout_handler)
 
     # File Handler
-    file_handler = RotatingFileHandler("logs/app.log", maxBytes=1024 * 1024 * 5, backupCount=5, encoding="utf-8")
+    file_handler = RotatingFileHandler(log_dir / "app.log", maxBytes=1024 * 1024 * 5, backupCount=5, encoding="utf-8")
     file_handler.setLevel(log_level)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
     # Warning File Handler
-    warning_file_handler = RotatingFileHandler("logs/warnings.log", maxBytes=1024 * 1024 * 5, backupCount=2, encoding="utf-8")
+    warning_file_handler = RotatingFileHandler(log_dir / "warnings.log", maxBytes=1024 * 1024 * 5, backupCount=2, encoding="utf-8")
     warning_file_handler.setLevel(logging.WARNING)
     warning_file_handler.setFormatter(formatter)
     logger.addHandler(warning_file_handler)
@@ -48,7 +50,7 @@ def setup_logger():
     # Missing Data Logger
     missing_data_logger.setLevel(logging.WARNING)
     missing_data_handler = RotatingFileHandler(
-        "logs/missing_data.log", maxBytes=1024 * 1024 * 5, backupCount=3, encoding="utf-8"
+        log_dir / "missing_data.log", maxBytes=1024 * 1024 * 5, backupCount=3, encoding="utf-8",
     )
     missing_data_handler.setLevel(logging.WARNING)
     missing_data_handler.setFormatter(formatter)
@@ -58,7 +60,7 @@ def setup_logger():
     # Audit Logger
     audit_logger.setLevel(logging.INFO)
     audit_handler = RotatingFileHandler(
-        "logs/audit.log", maxBytes=1024 * 1024 * 10, backupCount=5, encoding="utf-8"
+        log_dir / "audit.log", maxBytes=1024 * 1024 * 10, backupCount=5, encoding="utf-8",
     )
     audit_handler.setLevel(logging.INFO)
     audit_handler.setFormatter(logging.Formatter("%(message)s"))

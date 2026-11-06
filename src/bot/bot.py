@@ -21,6 +21,17 @@ if TYPE_CHECKING:
 
 CAPTION_LIMIT = 1024
 TEXT_LIMIT = 4096
+PHOTO_UPLOAD_LIMIT = 10 * 1024 * 1024
+# Telegram errors meaning it could not download/accept a photo given by URL
+_MEDIA_FETCH_ERRORS = (
+    "webpage_curl_failed",
+    "webpage_media_empty",
+    "wrong file identifier",
+    "failed to get http url content",
+    "wrong type of the web page content",
+    "image_process_failed",
+    "photo_invalid_dimensions",
+)
 _IMAGE_CHECK_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                   "Chrome/124.0 Safari/537.36",
@@ -40,6 +51,11 @@ def _first_message(result: Any) -> Optional[Any]:
     if isinstance(result, (list, tuple)):
         return result[0] if result else None
     return result
+
+
+def _is_media_fetch_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in _MEDIA_FETCH_ERRORS)
 
 
 class TelegramNewsBot:
@@ -198,13 +214,54 @@ class TelegramNewsBot:
             logger.warning("[TelegramNewsBot] No valid media to send, falling back to text message")
             return await self._send_text_message(text)
 
-        if len(media_group) > 10:
-            return await self._send_large_media_group(media_group)
-
         logger.info(
             "[TelegramNewsBot] Sending media group with caption: %s",
             media_group[0].caption[:500] if media_group[0].caption else "No caption",
         )
+        try:
+            return await self._send_albums(media_group)
+        except BadRequest as e:
+            if not _is_media_fetch_error(e):
+                raise
+            logger.warning("[TelegramNewsBot] Telegram could not fetch images (%s), uploading them ourselves", e)
+
+        uploaded = await self._download_media(media_group)
+        if uploaded:
+            try:
+                return await self._send_albums(uploaded)
+            except BadRequest as e:
+                logger.warning("[TelegramNewsBot] Upload of images failed (%s)", e)
+        logger.warning("[TelegramNewsBot] Falling back to text message")
+        return await self._send_text_message(text)
+
+    async def _download_media(self, media_group: list[InputMediaPhoto]) -> list[InputMediaPhoto]:
+        """Re-create the album with image bytes instead of URLs; drops images that fail to download."""
+        if not self.http_client or self.http_client.is_closed:
+            self.http_client = self._init_http_client()
+        result = []
+        for item in media_group:
+            try:
+                response = await self.http_client.get(
+                    item.media, headers=_IMAGE_CHECK_HEADERS, follow_redirects=True,
+                )
+                response.raise_for_status()
+            except Exception as e:
+                logger.warning("[TelegramNewsBot] Cannot download image %s: %r", item.media, e)
+                continue
+            if len(response.content) > PHOTO_UPLOAD_LIMIT:
+                logger.warning(
+                    "[TelegramNewsBot] Image too big to upload (%d bytes): %s", len(response.content), item.media,
+                )
+                continue
+            result.append(InputMediaPhoto(media=response.content))
+        if result:
+            first = media_group[0]
+            result[0] = InputMediaPhoto(media=result[0].media, caption=first.caption, parse_mode=first.parse_mode)
+        return result
+
+    async def _send_albums(self, media_group: list[InputMediaPhoto]) -> Optional[SentMessage]:
+        if len(media_group) > 10:
+            return await self._send_large_media_group(media_group)
         result = await self.retry_handler.run_with_retry(
             self.bot.send_media_group,
             chat_id=self.channel_id,

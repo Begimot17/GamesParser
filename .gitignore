@@ -64,3 +64,7 @@ test_news_bot.db
 fetched_html/
 .omc/
 .playwright-mcp/
+
+# Logs (incl. rotated *.log.N)
+logs/*
+!logs/.placeholder

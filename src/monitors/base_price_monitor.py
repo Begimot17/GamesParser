@@ -103,7 +103,12 @@ class PriceMonitorBase(ABC):
             short_description=short_description,
             worth=worth,
         )
-        ref = await self.bot.send_message(message, images=images)
+        try:
+            ref = await self.bot.send_message(message, images=images)
+        except Exception as e:
+            # One failed alert must not abort the rest of the cycle; it is retried next cycle
+            logger.error("[%s] Failed to send alert for %r: %r", self.LOG_PREFIX, display_name, e)
+            return False
         if ref and estate:
             await self._register_estate(estate, ref, short_description, images)
         return bool(ref)

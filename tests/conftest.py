@@ -1,10 +1,15 @@
 """Shared pytest fixtures for GamesParser tests."""
 
 import os
+import tempfile
 
-import pytest
 
-from src.config.config import settings
+# Must run before src.common.logger is imported anywhere
+os.environ["LOG_DIR"] = tempfile.mkdtemp(prefix="gamesparser-test-logs-")
+
+import pytest  # noqa: E402
+
+from src.config.config import settings  # noqa: E402
 
 
 @pytest.fixture(autouse=False)

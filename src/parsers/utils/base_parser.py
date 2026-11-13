@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import os
 import re
 from abc import ABC, abstractmethod
@@ -163,6 +164,10 @@ class BaseParser(ABC):
         url = self._normalize_url(url)
         url = url.split("?")[0].split("#")[0]
 
+        host = (urlparse(url).hostname or "").lower()
+        if host != domain and not host.endswith("." + domain):
+            return ""  # domain only appeared in the path/query of a foreign host
+
         if validation_regex and not re.search(validation_regex, url):
             return ""
 
@@ -178,11 +183,19 @@ class BaseParser(ABC):
 
     # ── HTML persistence ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _html_filename(url: str) -> str:
+        """Filesystem-safe name for a URL; long URLs are truncated with a hash (Windows path limit)."""
+        name = quote(url, safe="")
+        if len(name) > 150:
+            name = f"{name[:120]}_{hashlib.sha1(url.encode()).hexdigest()[:12]}"
+        return f"{name}.html"
+
     def _save_html_on_error(self, html: str, url: str) -> None:
         if not settings.SAVE_HTML:
             return
         os.makedirs(settings.HTML_DIR, exist_ok=True)
-        filepath = os.path.join(settings.HTML_DIR, f"{quote(url, safe='')}.html")
+        filepath = os.path.join(settings.HTML_DIR, self._html_filename(url))
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(html)
@@ -193,7 +206,7 @@ class BaseParser(ABC):
         if not settings.SAVE_ALL_FETCHED_HTML:
             return
         os.makedirs(settings.FETCHED_HTML_DIR, exist_ok=True)
-        filepath = os.path.join(settings.FETCHED_HTML_DIR, f"{quote(url, safe='')}.html")
+        filepath = os.path.join(settings.FETCHED_HTML_DIR, self._html_filename(url))
         try:
             async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
                 await f.write(html_content)

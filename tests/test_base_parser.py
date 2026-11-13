@@ -95,3 +95,20 @@ class TestNormalizeUrl:
         p = ConcreteParser()  # no default_url
         result = p._normalize_url("/path")
         assert result == ""
+
+
+class TestStoreUrlAndFilenames:
+    def test_foreign_host_with_store_domain_in_path_rejected(self):
+        p = ConcreteParser(default_url="https://example.com")
+        p.STORE_CONFIG = {"steam": {"domain": "store.steampowered.com"}}
+        assert p._clean_store_url("https://evil.com/store.steampowered.com/app/1", "steam") == ""
+        assert (
+            p._clean_store_url("https://store.steampowered.com/app/1/x?y=1", "steam")
+            == "https://store.steampowered.com/app/1/x"
+        )
+
+    def test_long_url_filename_is_bounded_and_stable(self):
+        url = "https://example.com/" + "a" * 500
+        name = BaseParser._html_filename(url)
+        assert len(name) < 160 and name == BaseParser._html_filename(url)
+        assert BaseParser._html_filename(url + "b") != name

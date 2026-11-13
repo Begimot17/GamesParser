@@ -181,6 +181,9 @@ class PikabuParser(BaseParser):
             return None
 
         post_id = initial_data["id"]
+        if await self._already_known(post_id):
+            logger.debug("[PikabuParser] Post %s already processed, skipping", post_id)
+            return None
         try:
             title = initial_data["title"]
             content = initial_data["content"]

@@ -148,6 +148,10 @@ class VGTimesParser(BaseParser):
             logger.warning("[VGTimesParser] Could not extract article ID from: %s", link)
             return None
 
+        if await self._already_known(article_id):
+            logger.debug("[VGTimesParser] Post %s already processed, skipping fetch", article_id)
+            return None
+
         title_elem = article_html.select_one(self.SELECTORS["title"])
         title = title_elem.get_text(strip=True) if title_elem else ""
         if not title:

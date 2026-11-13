@@ -3,7 +3,7 @@ import hashlib
 import os
 import re
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, Optional, Self
+from typing import AsyncGenerator, Awaitable, Callable, Optional, Self
 from urllib.parse import quote, urljoin, urlparse
 
 import aiofiles
@@ -55,6 +55,9 @@ class BaseParser(ABC):
         self._price_service = None
         self._services_initialized = False
         self._is_first_run: bool = False
+        # Set by ParserManager: lets a parser skip already-processed posts BEFORE the costly
+        # article fetch and price lookups (otherwise every cycle re-fetches every known post).
+        self.is_known: Optional[Callable[[str], Awaitable[bool]]] = None
 
     def _init_services(self) -> None:
         """Lazily initialise LLM and PriceService (avoids import-time circular deps)."""
@@ -212,6 +215,16 @@ class BaseParser(ABC):
                 await f.write(html_content)
         except IOError as e:
             logger.error("Error saving fetched HTML for %s: %s", url, e)
+
+    async def _already_known(self, post_id: str) -> bool:
+        """True if the manager says this post was processed already (errors mean 'unknown')."""
+        if not self.is_known:
+            return False
+        try:
+            return bool(await self.is_known(post_id))
+        except Exception as e:
+            logger.warning("[%s] is_known check failed for %s: %s", self.__class__.__name__, post_id, e)
+            return False
 
     # ── Shared enrichment helpers ─────────────────────────────────────────
 

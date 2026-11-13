@@ -153,6 +153,9 @@ class StopGameParser(BaseParser):
 
         post_id = initial_data["id"]
         link = initial_data["link"]
+        if await self._already_known(post_id):
+            logger.debug("[StopGameParser] Post %s already processed, skipping fetch", post_id)
+            return None
         try:
             title = initial_data["title"]
             images = [initial_data["image_url"]] if initial_data["image_url"] else []

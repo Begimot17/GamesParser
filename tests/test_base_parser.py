@@ -112,3 +112,20 @@ class TestStoreUrlAndFilenames:
         name = BaseParser._html_filename(url)
         assert len(name) < 160 and name == BaseParser._html_filename(url)
         assert BaseParser._html_filename(url + "b") != name
+
+
+class TestAlreadyKnown:
+    @pytest.mark.asyncio
+    async def test_no_callback_means_unknown(self, parser):
+        assert await parser._already_known("1") is False
+
+    @pytest.mark.asyncio
+    async def test_uses_callback(self, parser):
+        parser.is_known = AsyncMock(side_effect=lambda pid: pid == "seen")
+        assert await parser._already_known("seen") is True
+        assert await parser._already_known("new") is False
+
+    @pytest.mark.asyncio
+    async def test_callback_error_means_unknown(self, parser):
+        parser.is_known = AsyncMock(side_effect=RuntimeError("db down"))
+        assert await parser._already_known("x") is False

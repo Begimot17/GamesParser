@@ -40,6 +40,7 @@ class ParserManager:
             is_first_run = await self._get_is_first_run()
             for parser in self.parsers:
                 parser._is_first_run = is_first_run
+                parser.is_known = self.storage.is_processed if self.storage else None
                 logger.info(
                     f"[ParserManager] Streaming posts using {type(parser).__name__}"
                     + (" (first run)" if is_first_run else ""),

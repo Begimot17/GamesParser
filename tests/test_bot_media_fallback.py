@@ -71,3 +71,39 @@ async def test_bad_request_is_not_retried():
         await RetryHandler({"max_retries": 5, "base_delay": 0}).run_with_retry(func)
 
     assert func.await_count == 1
+
+
+import aiohttp  # noqa: E402
+
+
+def _http_error(status):
+    return aiohttp.ClientResponseError(request_info=None, history=(), status=status)
+
+
+@pytest.mark.asyncio
+async def test_permanent_http_error_not_retried():
+    calls = 0
+
+    async def func():
+        nonlocal calls
+        calls += 1
+        raise _http_error(404)
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await RetryHandler({"max_retries": 5, "base_delay": 0, "min_delay": 0}).run_with_retry(func)
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_transient_http_error_retried():
+    calls = 0
+
+    async def func():
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise _http_error(503)
+        return "ok"
+
+    result = await RetryHandler({"max_retries": 5, "base_delay": 0, "min_delay": 0}).run_with_retry(func)
+    assert result == "ok" and calls == 3

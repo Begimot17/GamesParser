@@ -4,6 +4,7 @@ import asyncio
 import random
 from typing import Any, Callable
 
+import aiohttp
 from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TimedOut
 
 from src.common.logger import logger
@@ -37,6 +38,16 @@ class RetryHandler:
         for attempt in range(self.max_retries):
             try:
                 return await func(*args, **kwargs)
+            except aiohttp.ClientResponseError as e:
+                if not self.is_retryable_http_status(e.status):
+                    raise  # 404/403/... will not fix itself
+                last_error = e
+                delay = self.calculate_delay(attempt)
+                logger.warning(
+                    "Retry %d/%d after HTTP %s. Waiting %.2f seconds...",
+                    attempt + 1, self.max_retries, e.status, delay,
+                )
+                await asyncio.sleep(delay)
             except (BadRequest, Forbidden):
                 # BadRequest subclasses NetworkError in PTB, but the same request will fail again
                 raise
@@ -75,6 +86,11 @@ class RetryHandler:
         if last_error:
             raise last_error
         return None
+
+    @staticmethod
+    def is_retryable_http_status(status: int) -> bool:
+        """5xx, 408 and 429 are transient; other 4xx are permanent."""
+        return status >= 500 or status in (408, 429)
 
     def calculate_delay(self, attempt: int) -> float:
         """Вычисляет задержку между попытками с учётом экспоненциального роста и джиттера."""

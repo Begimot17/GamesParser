@@ -224,7 +224,8 @@ class PriceService:
                 for r in (data.get("reviews") or [])
                 if r.get("review", "").strip()
             ][:count]
-        except Exception:
+        except Exception as e:
+            logger.debug("Steam reviews fetch failed: %s", e)
             return []
 
     @staticmethod

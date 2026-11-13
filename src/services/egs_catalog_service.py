@@ -202,7 +202,8 @@ class EgsCatalogService:
                 "has_controller_support": has_controller,
                 "has_multiplayer": has_multiplayer,
             }
-        except Exception:
+        except Exception as e:
+            logger.debug("EGS element parse failed: %s", e)
             return None
 
     async def scan_all_prices(

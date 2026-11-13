@@ -27,7 +27,8 @@ class ParserManager:
         try:
             stats = await self.storage.get_posts_stats()
             return stats.get("total", 0) == 0
-        except Exception:
+        except Exception as e:
+            logger.warning("[ParserManager] Cannot read posts stats, assuming not first run: %s", e)
             return False
 
     async def stream_posts(self) -> AsyncGenerator[Optional[Post], None]:

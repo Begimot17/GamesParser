@@ -68,3 +68,6 @@ fetched_html/
 # Logs (incl. rotated *.log.N)
 logs/*
 !logs/.placeholder
+
+# runtime state / local launcher
+once_monitors.json

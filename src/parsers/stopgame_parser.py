@@ -127,6 +127,8 @@ class StopGameParser(BaseParser):
         if not link_elem:
             return None
         link = link_elem.get("href")
+        if not link:
+            return None
         if not link.startswith("https://"):
             link = urljoin(self.TARGET_URLS[0], link)
 
@@ -162,7 +164,7 @@ class StopGameParser(BaseParser):
             store_links = self._extract_store_links(article_html)
 
             content, article_images = await self._fetch_article_data(link)
-            images = list(set(images + article_images))
+            images = list(dict.fromkeys(images + article_images))
 
             if settings.ENABLE_LLM and self.llm:
                 title, content, images, store_links = await self._update_post_with_llm_data(
@@ -191,7 +193,7 @@ class StopGameParser(BaseParser):
 
             metadata = PostMetadata(
                 store_links=store_links,
-                images=list(set(images)),
+                images=list(dict.fromkeys(images)),
                 date=initial_data["date"],
                 game_info=game_info_raw,
             )

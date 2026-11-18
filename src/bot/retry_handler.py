@@ -1,6 +1,7 @@
 """Retry handler utility for GamesParser bot."""
 
 import asyncio
+import functools
 import random
 from typing import Any, Callable
 
@@ -121,6 +122,7 @@ def retry(
     handler = RetryHandler(config)
 
     def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
         async def wrapper(*args, **kwargs) -> Any:
             return await handler.run_with_retry(func, *args, **kwargs)
 

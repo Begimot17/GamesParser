@@ -225,7 +225,7 @@ class PikabuParser(BaseParser):
             metadata = PostMetadata(
                 rating=initial_data["rating"],
                 store_links=store_links,
-                images=list(set(images)),
+                images=list(dict.fromkeys(images)),
                 date=initial_data["date"],
                 tags=initial_data["tags"],
                 views=initial_data["views"],

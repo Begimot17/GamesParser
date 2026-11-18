@@ -49,7 +49,7 @@ class PostMetadata(BaseModel):
     @classmethod
     def clean_images(cls, v: list) -> list:
         """Очистка списка изображений."""
-        return list(set(v))
+        return list(dict.fromkeys(v))
 
 
 class Post(BaseModel):
